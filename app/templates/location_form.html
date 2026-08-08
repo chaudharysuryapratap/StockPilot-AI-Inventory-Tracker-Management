@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Edit location · StockPilot AI{% endblock %}
+{% block heading %}Edit {{ location.name }}{% endblock %}
+{% block content %}
+<article class="panel form-panel edit-card">
+  <form method="post" class="data-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-row"><label>Name<input name="name" value="{{ location.name }}" maxlength="120" required></label><label>Code<input name="code" value="{{ location.code }}" maxlength="32" required></label></div>
+    <label>Address<input name="address" value="{{ location.address or '' }}" maxlength="255"></label>
+    <label class="checkbox-label"><input type="checkbox" name="is_active" value="true" {% if location.is_active %}checked{% endif %}> Active location</label>
+    <div class="inline-actions"><button class="button primary">Save location</button><a class="button secondary" href="{{ url_for('web.locations_page') }}">Cancel</a></div>
+  </form>
+</article>
+{% endblock %}

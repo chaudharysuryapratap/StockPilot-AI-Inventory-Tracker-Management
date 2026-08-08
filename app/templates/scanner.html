@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Barcode scanner · StockPilot AI{% endblock %}
+{% block heading %}Camera barcode scanner{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div><p class="subhead">Scan a product barcode to identify its SKU, category, and live stock position. Camera access requires HTTPS or localhost.</p></div>
+  <span class="role-tag {{ current_user.role }}">{{ role_labels.get(current_user.role, current_user.role)|title }} mode</span>
+</section>
+
+<section class="content-grid scanner-layout" id="scanner-app" data-lookup-url="{{ url_for('api.barcode_lookup_api') }}" data-transfer-url="{{ url_for('web.transfers_page') }}">
+  <article class="panel form-panel scanner-panel">
+    <div class="panel-header scanner-heading"><div><p class="eyebrow">LIVE CAMERA</p><h2>Point at a barcode</h2></div><span id="camera-status" class="status-chip neutral">Camera idle</span></div>
+    <div id="barcode-reader" class="barcode-reader" aria-label="Camera barcode scanner"></div>
+    <p id="scanner-message" class="scanner-message" role="status">Start the camera, then hold the barcode steady inside the frame.</p>
+    <div class="inline-actions scanner-actions">
+      <button class="button primary" id="start-scanner" type="button">Start camera</button>
+      <button class="button secondary" id="stop-scanner" type="button" disabled>Stop camera</button>
+    </div>
+    <form id="manual-barcode-form" class="data-form manual-scan-form">
+      <label>Barcode or SKU<input id="manual-barcode" maxlength="100" autocomplete="off" placeholder="Scan with a USB reader or type the code" required></label>
+      <button class="button secondary" type="submit">Look up item</button>
+    </form>
+  </article>
+
+  <article class="panel scanner-result" id="scanner-result" hidden aria-live="polite">
+    <div class="panel-header"><div><p class="eyebrow">MATCHED PRODUCT</p><h2 id="result-name"></h2></div><span id="result-category" class="location-tag"></span></div>
+    <dl class="scan-facts">
+      <div><dt>SKU ID</dt><dd><code id="result-sku"></code></dd></div>
+      <div><dt>Barcode</dt><dd id="result-barcode"></dd></div>
+      <div><dt>Unit</dt><dd id="result-unit"></dd></div>
+      <div><dt>Available</dt><dd id="result-available"></dd></div>
+    </dl>
+    <div class="table-wrap scan-stock-table"><table><thead><tr><th>Location / bin</th><th>On hand</th><th>Reserved</th><th>Available</th></tr></thead><tbody id="result-stock"></tbody></table></div>
+    <div class="inline-actions scan-result-actions"><a class="button primary" id="transfer-scanned-item" href="{{ url_for('web.transfers_page') }}">Transfer this item</a><button class="button secondary" id="scan-another" type="button">Scan another</button></div>
+  </article>
+</section>
+<script src="{{ url_for('static', filename='vendor/html5-qrcode.min.js') }}" defer></script>
+<script src="{{ url_for('static', filename='barcode-scanner.js') }}" defer></script>
+{% endblock %}

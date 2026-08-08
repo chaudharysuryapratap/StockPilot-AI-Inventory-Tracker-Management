@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Edit bin · StockPilot AI{% endblock %}
+{% block heading %}Edit {{ bin.location.code }} / {{ bin.code }}{% endblock %}
+{% block content %}
+<article class="panel form-panel edit-card">
+  <form method="post" class="data-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-row"><label>Bin code<input name="code" value="{{ bin.code }}" maxlength="50" required></label><label>Capacity<input type="number" name="capacity" value="{{ bin.capacity or '' }}" min="1" step="1" placeholder="Unlimited"></label></div>
+    <label class="checkbox-label"><input type="checkbox" name="is_active" value="true" {% if bin.is_active %}checked{% endif %}> Active bin</label>
+    <div class="inline-actions"><button class="button primary">Save bin</button><a class="button secondary" href="{{ url_for('web.locations_page') }}">Cancel</a></div>
+  </form>
+</article>
+{% endblock %}

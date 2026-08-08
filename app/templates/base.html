@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="AI-assisted inventory control dashboard">
+    <meta name="theme-color" content="#111d37">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>{% block title %}StockPilot AI{% endblock %}</title>
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="{{ url_for('web.dashboard') }}">
+          <span class="brand-mark">SP</span>
+          <span>StockPilot <em>AI</em></span>
+        </a>
+        <p class="sidebar-label">OPERATIONS</p>
+        <nav>
+          <a href="{{ url_for('web.dashboard') }}" class="nav-link {% if request.endpoint == 'web.dashboard' %}active{% endif %}">
+            <span>▦</span> Overview
+          </a>
+          <a href="{{ url_for('web.products_page') }}" class="nav-link {% if request.endpoint == 'web.products_page' %}active{% endif %}">
+            <span>▤</span> Products & stock
+          </a>
+          <a href="{{ url_for('web.scanner_page') }}" class="nav-link {% if request.endpoint == 'web.scanner_page' %}active{% endif %}">
+            <span>▣</span> Barcode scanner
+          </a>
+          <a href="{{ url_for('web.picker_page') }}" class="nav-link {% if request.endpoint == 'web.picker_page' %}active{% endif %}">
+            <span>☝</span> Mobile picker
+          </a>
+          {% if current_user and current_user.role in ['admin', 'manager'] %}
+            <a href="{{ url_for('web.manage_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('web.manage') %}active{% endif %}">
+              <span>＋</span> Manage inventory
+            </a>
+            <a href="{{ url_for('web.suppliers_page') }}" class="nav-link {% if request.endpoint and 'supplier' in request.endpoint %}active{% endif %}">
+              <span>♧</span> Suppliers
+            </a>
+            <a href="{{ url_for('web.reports_page') }}" class="nav-link {% if request.endpoint and 'report' in request.endpoint %}active{% endif %}">
+              <span>▥</span> Reports & alerts
+            </a>
+          {% endif %}
+          <a href="{{ url_for('web.locations_page') }}" class="nav-link {% if request.endpoint in ['web.locations_page', 'web.edit_location_form', 'web.edit_bin_form'] %}active{% endif %}">
+            <span>⌂</span> Locations & bins
+          </a>
+          <a href="{{ url_for('web.transfers_page') }}" class="nav-link {% if request.endpoint and 'transfer' in request.endpoint %}active{% endif %}">
+            <span>⇄</span> Stock transfers
+          </a>
+          <a href="{{ url_for('web.orders_page') }}" class="nav-link {% if request.endpoint and 'order' in request.endpoint %}active{% endif %}">
+            <span>⇥</span> Sales orders
+          </a>
+          <a href="{{ url_for('web.returns_page') }}" class="nav-link {% if request.endpoint and 'return' in request.endpoint %}active{% endif %}">
+            <span>↶</span> Returns / RMA
+          </a>
+          {% if current_user and current_user.role == 'admin' %}
+            <a href="{{ url_for('web.users_page') }}" class="nav-link {% if request.endpoint and 'user' in request.endpoint %}active{% endif %}">
+              <span>♙</span> Users & roles
+            </a>
+          {% endif %}
+          <a href="{{ url_for('api.insights_api') }}" class="nav-link" target="_blank">
+            <span>✦</span> Insight feed
+          </a>
+        </nav>
+        <div class="sidebar-footer">
+          <span class="pulse"></span>
+          <div>
+            <strong>Live inventory</strong>
+            <small>POS events update stock instantly</small>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">INVENTORY CONTROL CENTRE</p>
+            <h1>{% block heading %}Good afternoon{% endblock %}</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="status-chip"><i></i> System online</span>
+            {% if current_user %}
+              <span class="user-chip"><b>{{ current_user.name }}</b><small>{{ role_labels.get(current_user.role, current_user.role)|title }}</small></span>
+            {% endif %}
+            <button class="button secondary" type="button" onclick="window.location.reload()">Refresh</button>
+            {% if auth_enabled and current_user %}
+              <form action="{{ url_for('web.logout') }}" method="post" class="logout-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="button secondary" type="submit">Sign out</button>
+              </form>
+            {% endif %}
+          </div>
+        </header>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-stack">
+              {% for category, message in messages %}
+                <div class="flash {{ category }}">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

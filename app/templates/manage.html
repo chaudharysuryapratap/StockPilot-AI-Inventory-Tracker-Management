@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}Manage inventory · StockPilot AI{% endblock %}
+{% block heading %}Manage your inventory{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div><p class="subhead">Add suppliers, locations, products, and auditable stock corrections without editing the database directly.</p></div>
+  <div class="inline-actions"><a class="button secondary" href="{{ url_for('web.suppliers_page') }}">Supplier directory</a><a class="button secondary" href="{{ url_for('web.locations_page') }}">Manage locations & bins</a><a class="button primary" href="{{ url_for('web.transfers_page') }}">Transfer stock</a></div>
+</section>
+
+<section class="manage-grid">
+  <article class="panel form-panel">
+    <p class="eyebrow">STEP 1</p><h2>Add a supplier</h2>
+    <form action="{{ url_for('web.add_supplier_form') }}" method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Supplier name<input name="name" required maxlength="120" placeholder="Metro Staples"></label>
+      <div class="form-row"><label>Email<input type="email" name="contact_email" placeholder="orders@example.com"></label><label>Lead time (days)<input type="number" name="lead_time_days" min="0" max="3650" value="3" required></label></div>
+      <div class="form-row"><label>Phone<input name="contact_phone" maxlength="50" placeholder="Optional"></label><label>Payment terms<input name="payment_terms" maxlength="100" placeholder="Net 30"></label></div>
+      <button class="button primary">Add supplier</button>
+    </form>
+  </article>
+  <article class="panel form-panel">
+    <p class="eyebrow">STEP 2</p><h2>Add a location</h2>
+    <form action="{{ url_for('web.add_location_form') }}" method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-row"><label>Location name<input name="name" required maxlength="120" placeholder="Main Store"></label><label>Code<input name="code" required maxlength="32" placeholder="MAIN"></label></div>
+      <label>Address<input name="address" maxlength="255" placeholder="Optional"></label>
+      <button class="button primary">Add location</button>
+    </form>
+  </article>
+  <article class="panel form-panel wide">
+    <p class="eyebrow">STEP 3</p><h2>Add a product</h2>
+    <form action="{{ url_for('web.add_product_form') }}" method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-row triple"><label>SKU<input name="sku" required maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9._/-]*" placeholder="COFFEE-250"></label><label>Product name<input name="name" required maxlength="255" placeholder="Cold Coffee 250 ml"></label><label>Barcode<input name="barcode" maxlength="100" placeholder="Optional"></label></div>
+      <div class="form-row triple"><label>Category<input name="category" value="General" required maxlength="100"></label><label>Unit of measure<input name="unit_of_measure" value="unit" required maxlength="20"></label><label class="checkbox-label"><input type="checkbox" name="is_perishable" value="true"> Perishable product</label></div>
+      <div class="form-row triple"><label>Cost price<input type="number" name="cost_price" min="0" max="99999999.99" step="0.01" value="0.00" required></label><label>Sell price<input type="number" name="sell_price" min="0" max="99999999.99" step="0.01" value="0.00" required></label><label>Reorder point<input type="number" name="reorder_point" min="0" step="1" value="0" required></label></div>
+      <div class="form-row"><label>Safety stock<input type="number" name="safety_stock" min="0" step="1" value="0" required></label><label>Preferred supplier<select name="preferred_supplier_id"><option value="">No preferred supplier</option>{% for supplier in suppliers %}<option value="{{ supplier.id }}">{{ supplier.name }} · {{ supplier.lead_time_days }} days</option>{% endfor %}</select></label></div>
+      <button class="button primary">Add product</button>
+    </form>
+  </article>
+  <article class="panel form-panel wide">
+    <p class="eyebrow">BULK CATALOGUE</p><h2>Import products from CSV</h2>
+    <p class="form-help">Required columns: <code>sku,name</code>. Imports are atomic: if any row is invalid, nothing is saved.</p>
+    <form action="{{ url_for('web.import_products_form') }}" method="post" enctype="multipart/form-data" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
+      <label class="checkbox-label"><input type="checkbox" name="update_existing" value="true"> Update products when the SKU already exists</label>
+      <button class="button secondary">Import CSV</button>
+    </form>
+  </article>
+  <article class="panel form-panel wide">
+    <p class="eyebrow">STEP 4</p><h2>Adjust stock</h2>
+    <p class="form-help">Use a positive number for received stock and a negative number for write-offs or count corrections.</p>
+    <form action="{{ url_for('web.adjust_stock_form') }}" method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-row"><label>Product<select name="sku" required><option value="">Select a product</option>{% for product in products %}<option value="{{ product.sku }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}</select></label><label>Location<select name="location_code" required><option value="">Select a location</option>{% for location in locations %}<option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label></div>
+      <div class="form-row"><label>Bin (optional)<select name="bin_code"><option value="">Unassigned / location level</option>{% for bin in bins %}<option value="{{ bin.code }}">{{ bin.location.code }} / {{ bin.code }}</option>{% endfor %}</select></label><label>Quantity change<input type="number" name="quantity_delta" step="0.01" required placeholder="e.g. 25 or -3"></label></div>
+      <div class="form-row"><label>Reason<select name="reason"><option value="stock_received">Stock received</option><option value="manual_count">Manual count</option><option value="waste">Waste / write-off</option><option value="return">Customer return</option></select></label><label>Note<input name="note" maxlength="255" placeholder="Optional reference"></label></div>
+      <button class="button primary">Save adjustment</button>
+    </form>
+  </article>
+</section>
+{% endblock %}

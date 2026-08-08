@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}Returns & RMA · StockPilot AI{% endblock %}
+{% block heading %}Returns and RMA{% endblock %}
+
+{% block content %}
+<section class="hero-row">
+  <p class="subhead">Authorize customer returns, receive them by disposition, and restore only saleable stock.</p>
+  <form method="get" class="inline-actions return-filter">
+    <select name="status" aria-label="Filter returns by status">
+      <option value="">All statuses</option>
+      {% for status in ['requested', 'authorized', 'receiving', 'completed', 'rejected', 'cancelled'] %}
+        <option value="{{ status }}" {% if selected_status == status %}selected{% endif %}>{{ status|title }}</option>
+      {% endfor %}
+    </select>
+    <button class="button secondary" type="submit">Filter</button>
+  </form>
+</section>
+
+<section class="panel table-panel">
+  <div class="panel-header"><div><p class="eyebrow">RETURN REGISTER</p><h2>Authorized and historical returns</h2></div><span class="mini-badge">{{ returns|length }} shown</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>RMA</th><th>Sales order</th><th>Reason</th><th>Requested by</th><th>Status</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+        {% for rma in returns %}
+          <tr>
+            <td><strong>{{ rma.rma_uid[:8] }}</strong><small>{{ rma.external_id or 'Internal request' }}</small></td>
+            <td>{{ rma.sales_order.customer_reference or rma.sales_order.order_uid[:8] }}</td>
+            <td>{{ rma.reason_code|replace('_', ' ')|title }}</td>
+            <td>{{ rma.created_by.name }}</td>
+            <td><span class="return-status {{ rma.status }}">{{ rma.status }}</span></td>
+            <td>{{ rma.created_at.strftime('%d %b %Y · %H:%M') }}</td>
+            <td><a class="button secondary compact" href="{{ url_for('web.return_detail_page', return_id=rma.id) }}">Open</a></td>
+          </tr>
+        {% else %}
+          <tr><td class="empty-row" colspan="7">No returns match this view. Create an RMA from a shipped sales order.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

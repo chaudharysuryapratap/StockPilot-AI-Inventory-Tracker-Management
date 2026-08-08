@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block title %}Stock transfers · StockPilot AI{% endblock %}
+{% block heading %}Stock transfers{% endblock %}
+
+{% block content %}
+<section class="content-grid transfer-layout">
+  <article class="panel form-panel">
+    <p class="eyebrow">ATOMIC MOVEMENT</p><h2>Transfer stock</h2>
+    <p class="form-help">Available stock moves in one transaction and creates paired user-attributed audit entries.</p>
+    <form action="{{ url_for('web.create_transfer_form') }}" method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="external_transfer_id" value="{{ transfer_request_id }}">
+      <label>Product<select name="sku" required><option value="">Select product</option>{% for product in products %}<option value="{{ product.sku }}" {% if selected_sku == product.sku %}selected{% endif %}>{{ product.name }} ({{ product.sku }})</option>{% endfor %}</select></label>
+      <div class="form-row"><label>Source location<select name="source_location_code" required><option value="">Select</option>{% for location in locations %}<option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label><label>Source bin<input name="source_bin_code" maxlength="50" placeholder="Optional"></label></div>
+      <div class="form-row"><label>Destination location<select name="destination_location_code" required><option value="">Select</option>{% for location in locations %}<option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label><label>Destination bin<input name="destination_bin_code" maxlength="50" placeholder="Optional"></label></div>
+      <label>Quantity<input type="number" name="quantity" min="0.01" step="0.01" required></label>
+      <label>Note<input name="note" maxlength="255" placeholder="Optional transfer reason"></label>
+      <button class="button primary">Complete transfer</button>
+    </form>
+  </article>
+  <article class="panel table-panel transfer-history">
+    <div class="panel-header"><div><p class="eyebrow">AUDIT HISTORY</p><h2>Recent transfers</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Product</th><th>Route</th><th>Quantity</th><th>User</th></tr></thead><tbody>
+      {% for transfer in transfers %}<tr><td><strong>{{ transfer.transfer_uid[:8] }}</strong><small>{{ transfer.created_at.strftime('%d %b %Y %H:%M') }}</small></td><td><strong>{{ transfer.product.sku }}</strong><small>{{ transfer.product.name }}</small></td><td>{{ transfer.source_location.code }}{% if transfer.source_bin %}/{{ transfer.source_bin.code }}{% endif %} → {{ transfer.destination_location.code }}{% if transfer.destination_bin %}/{{ transfer.destination_bin.code }}{% endif %}</td><td>{{ transfer.quantity }} {{ transfer.product.unit_of_measure }}</td><td>{{ transfer.user.name }}</td></tr>
+      {% else %}<tr><td colspan="5" class="empty-row">No transfers completed yet.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </article>
+</section>
+{% endblock %}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Staff sign in · StockPilot AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body class="login-body">
+    <main class="login-card">
+      <a class="brand login-brand" href="{{ url_for('web.login') }}">
+        <span class="brand-mark">SP</span><span>StockPilot <em>AI</em></span>
+      </a>
+      <p class="eyebrow">SECURE STAFF ACCESS</p>
+      <h1>Sign in to the control panel.</h1>
+      <p class="subhead">Use your named StockPilot account.</p>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+      {% endwith %}
+      <form method="post" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Email <small>(or legacy username)</small><input name="identifier" autocomplete="username" required autofocus></label>
+        <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+        <button class="button primary" type="submit">Sign in <span>→</span></button>
+      </form>
+    </main>
+  </body>
+</html>

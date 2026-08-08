@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Suppliers · StockPilot AI{% endblock %}
+{% block heading %}Supplier records{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div><p class="subhead">Maintain workspace-owned supplier contacts, lead times, and payment terms used by forecasting and replenishment reports.</p></div>
+  <div class="inline-actions">
+    {% if include_inactive %}<a class="button secondary" href="{{ url_for('web.suppliers_page') }}">Hide archived</a>{% else %}<a class="button secondary" href="{{ url_for('web.suppliers_page', include_inactive=1) }}">Show archived</a>{% endif %}
+    <a class="button primary" href="{{ url_for('web.reports_page') }}">Open reports</a>
+  </div>
+</section>
+
+<section class="manage-grid">
+  <article class="panel form-panel">
+    <p class="eyebrow">NEW SUPPLIER</p><h2>Add supplier</h2>
+    <form action="{{ url_for('web.add_supplier_form') }}" method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="return_to" value="suppliers">
+      <label>Supplier name<input name="name" required maxlength="255" placeholder="Metro Staples"></label>
+      <div class="form-row"><label>Contact email<input type="email" name="contact_email" maxlength="255" placeholder="orders@example.com"></label><label>Contact phone<input name="contact_phone" maxlength="50" placeholder="Optional"></label></div>
+      <div class="form-row"><label>Lead time (days)<input type="number" name="lead_time_days" min="0" max="3650" value="3" required></label><label>Payment terms<input name="payment_terms" maxlength="100" placeholder="Net 30"></label></div>
+      <button class="button primary">Add supplier</button>
+    </form>
+  </article>
+
+  <article class="panel wide">
+    <div class="section-heading"><div><p class="eyebrow">SUPPLIER DIRECTORY</p><h2>{{ suppliers|length }} record(s)</h2></div></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Supplier</th><th>Contact</th><th>Lead time</th><th>Payment terms</th><th>Products</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for supplier in suppliers %}
+            <tr>
+              <td><strong>{{ supplier.name }}</strong></td>
+              <td>{{ supplier.contact_email or '—' }}<br><small>{{ supplier.contact_phone or '' }}</small></td>
+              <td>{{ supplier.lead_time_days }} day(s)</td>
+              <td>{{ supplier.payment_terms or '—' }}</td>
+              <td>{{ supplier.products|length }}</td>
+              <td><span class="risk-pill {{ 'healthy' if supplier.is_active else 'watch' }}">{{ 'Active' if supplier.is_active else 'Archived' }}</span></td>
+              <td><div class="inline-actions"><a class="button secondary compact" href="{{ url_for('web.edit_supplier_form', supplier_id=supplier.id) }}">Edit</a>{% if supplier.is_active %}<form action="{{ url_for('web.archive_supplier_form', supplier_id=supplier.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button secondary compact">Archive</button></form>{% else %}<form action="{{ url_for('web.restore_supplier_form', supplier_id=supplier.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button primary compact">Restore</button></form>{% endif %}</div></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7">No supplier records match this view.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</section>
+{% endblock %}

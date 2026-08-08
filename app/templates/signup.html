@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Set up StockPilot</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  </head>
+  <body class="login-body">
+    <main class="login-card setup-card">
+      <a class="brand login-brand" href="{{ url_for('web.signup') }}"><span class="brand-mark">SP</span><span>StockPilot <em>AI</em></span></a>
+      <p class="eyebrow">FIRST-RUN SETUP</p>
+      <h1>Create the administrator account.</h1>
+      <p class="subhead">This account owns user access and keeps the existing inventory audit history attached.</p>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+      {% endwith %}
+      <form method="post" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Workspace name<input name="workspace_name" maxlength="255" placeholder="FreshMart" autofocus></label>
+        <label>Your name<input name="name" maxlength="255" autocomplete="name" required></label>
+        <label>Email<input type="email" name="email" maxlength="255" autocomplete="email" required></label>
+        <label>Password<input type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" required><small>Use at least 10 characters.</small></label>
+        <label>Confirm password<input type="password" name="password_confirm" minlength="10" maxlength="128" autocomplete="new-password" required></label>
+        <button class="button primary" type="submit">Create admin account <span>→</span></button>
+      </form>
+    </main>
+  </body>
+</html>

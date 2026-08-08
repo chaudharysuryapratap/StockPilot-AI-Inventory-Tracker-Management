@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}Order {{ order.order_uid[:8] }} · StockPilot AI{% endblock %}
+{% block heading %}Order {{ order.customer_reference or order.order_uid[:8] }}{% endblock %}
+
+{% block content %}
+<div class="hero-row order-detail-hero">
+  <div>
+    <p class="subhead">{{ order.location.name }} ({{ order.location.code }}) · {{ order.channel|title }} · Created by {{ order.created_by.name }}</p>
+  </div>
+  <div class="inline-actions">
+    <span class="order-status {{ order.status }}">{{ order.status|replace('_', ' ') }}</span>
+    <a class="button secondary" href="{{ url_for('web.orders_page') }}">Back to orders</a>
+  </div>
+</div>
+
+<section class="panel order-progress-panel">
+  <div class="order-progress">
+    {% for key, label in [('pending', 'Reserved'), ('picking', 'Picking'), ('packed', 'Packed'), ('shipped', 'Shipped')] %}
+      <div class="progress-step {% if order.status == key %}current{% elif (key == 'pending') or (key == 'picking' and order.status in ['packed', 'shipped']) or (key == 'packed' and order.status == 'shipped') %}done{% endif %}">
+        <span>{{ loop.index }}</span><div><strong>{{ label }}</strong>{% if key == 'pending' %}<small>{{ order.created_at.strftime('%d %b · %H:%M') }}</small>{% elif key == 'picking' and order.picking_started_at %}<small>{{ order.picking_started_at.strftime('%d %b · %H:%M') }}</small>{% elif key == 'packed' and order.packed_at %}<small>{{ order.packed_at.strftime('%d %b · %H:%M') }}</small>{% elif key == 'shipped' and order.shipped_at %}<small>{{ order.shipped_at.strftime('%d %b · %H:%M') }}</small>{% endif %}</div>
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel table-panel pick-list-panel">
+  <div class="panel-header">
+    <div><p class="eyebrow">BIN-AWARE PICK LIST</p><h2>Items and reserved positions</h2></div>
+    <span class="mini-badge">{{ order.items|length }} line{% if order.items|length != 1 %}s{% endif %}</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>SKU / item</th><th>Category</th><th>Pick location</th><th>Reserved</th><th>Pick status</th><th></th></tr></thead>
+      <tbody>
+        {% for item in order.items %}
+          {% for allocation in item.allocations %}
+            <tr>
+              <td><strong>{{ item.product.sku }}</strong><small>{{ item.product.name }}</small></td>
+              <td>{{ item.product.category }}</td>
+              <td><span class="location-tag">{{ allocation.stock_level.location.code }}{% if allocation.stock_level.bin %}/{{ allocation.stock_level.bin.code }}{% else %}/UNASSIGNED{% endif %}</span></td>
+              <td>{{ allocation.quantity_reserved }} {{ item.product.unit_of_measure }}</td>
+              <td>{% if item.picked_at %}<span class="covered-tag">Picked by {{ item.picked_by.name }}</span>{% else %}<span class="action-tag">Waiting</span>{% endif %}</td>
+              <td>
+                {% if order.status == 'picking' and not item.picked_at and loop.first %}
+                  <form method="post" action="{{ url_for('web.confirm_order_item_pick_form', order_id=order.id, item_id=item.id) }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="button primary compact" type="submit">Confirm line picked</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel order-actions-panel">
+  <div>
+    <p class="eyebrow">NEXT ACTION</p>
+    <h2>Fulfilment controls</h2>
+    <p class="form-help">Physical stock is deducted only when an Admin or Manager confirms shipment.</p>
+  </div>
+  <div class="inline-actions order-action-buttons">
+    {% if order.status == 'shipped' and current_user.role in ['admin', 'manager'] %}
+      <a class="button secondary" href="{{ url_for('web.create_return_form', order_id=order.id) }}">Create return / RMA</a>
+    {% endif %}
+    {% if order.status == 'pending' %}
+      <form method="post" action="{{ url_for('web.start_order_picking_form', order_id=order.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="button primary" type="submit">Generate pick list</button>
+      </form>
+    {% elif order.status == 'picking' %}
+      <form method="post" action="{{ url_for('web.pack_order_form', order_id=order.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="button primary" type="submit">Confirm packing</button>
+      </form>
+    {% elif order.status == 'packed' and current_user.role in ['admin', 'manager'] %}
+      <form method="post" action="{{ url_for('web.ship_order_form', order_id=order.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="button primary" type="submit">Confirm shipment</button>
+      </form>
+    {% endif %}
+    {% if order.status not in ['shipped', 'cancelled'] and current_user.role in ['admin', 'manager'] %}
+      <form method="post" action="{{ url_for('web.cancel_order_form', order_id=order.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="button danger" type="submit">Cancel and release stock</button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+{% if order.return_authorizations %}
+<section class="panel linked-returns-panel">
+  <div class="panel-header"><div><p class="eyebrow">AFTER-SALES</p><h2>Returns linked to this order</h2></div></div>
+  <div class="linked-return-list">
+    {% for rma in order.return_authorizations %}
+      <a href="{{ url_for('web.return_detail_page', return_id=rma.id) }}">
+        <span><strong>RMA {{ rma.rma_uid[:8] }}</strong><small>{{ rma.reason_code|replace('_', ' ')|title }}</small></span>
+        <span class="return-status {{ rma.status }}">{{ rma.status }}</span>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if order.note %}<p class="order-note"><strong>Internal note:</strong> {{ order.note }}</p>{% endif %}
+{% endblock %}

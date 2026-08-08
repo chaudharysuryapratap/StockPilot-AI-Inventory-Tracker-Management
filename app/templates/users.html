@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Users & roles · StockPilot AI{% endblock %}
+{% block heading %}Users & role permissions{% endblock %}
+
+{% block content %}
+<section class="content-grid user-layout">
+  <article class="panel form-panel">
+    <p class="eyebrow">ADMIN CONTROL</p><h2>Add a staff account</h2>
+    <p class="form-help">Managers control inventory setup. Pickers can scan, view stock, and complete transfers.</p>
+    <form method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Name<input name="name" maxlength="255" required></label>
+      <label>Email<input type="email" name="email" maxlength="255" autocomplete="off" required></label>
+      <div class="form-row">
+        <label>Role<select name="role" required>{% for value, label in roles.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+        <label>Temporary password<input type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" required></label>
+      </div>
+      <input type="hidden" name="is_active" value="true">
+      <button class="button primary" type="submit">Add user</button>
+    </form>
+  </article>
+  <article class="panel table-panel">
+    <div class="panel-header"><div><p class="eyebrow">WORKSPACE ACCESS</p><h2>{{ users|length }} user{{ '' if users|length == 1 else 's' }}</h2></div></div>
+    <div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Status</th><th>Action</th></tr></thead><tbody>
+      {% for user in users %}
+        <tr><td><strong>{{ user.name }}</strong><small>{{ user.email }}</small></td><td><span class="role-tag {{ user.role }}">{{ roles.get(user.role, user.role)|title }}</span></td><td><span class="{{ 'covered-tag' if user.is_active else 'action-tag' }}">{{ 'Active' if user.is_active else 'Inactive' }}</span></td><td><a class="button secondary compact" href="{{ url_for('web.edit_user_form', user_id=user.id) }}">Edit</a></td></tr>
+      {% else %}<tr><td colspan="4" class="empty-row">No staff accounts found.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </article>
+</section>
+{% endblock %}

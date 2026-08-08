@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Products · StockPilot AI{% endblock %}
+{% block heading %}Products & stock levels{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div><p class="subhead">Live quantities grouped by your business locations.</p></div>
+  <div class="inline-actions">
+    <a class="button secondary" href="{{ url_for('web.products_page', include_archived=0 if include_archived else 1) }}">{{ 'Hide archived' if include_archived else 'Show archived' }}</a>
+    <a class="button secondary" href="{{ url_for('api.products_api') }}" target="_blank">Open products API <span>↗</span></a>
+  </div>
+</section>
+
+<section class="panel table-panel">
+  <div class="panel-header">
+    <div>
+      <p class="eyebrow">PRODUCT CATALOGUE</p>
+      <h2>{{ products|length }} tracked product{{ '' if products|length == 1 else 's' }}</h2>
+    </div>
+    <span class="muted">Every balance below comes from the stock-level ledger.</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Product</th><th>SKU / barcode</th><th>Category</th><th>Pricing</th><th>Status</th><th>Stock by location</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for product in products %}
+        <tr>
+          <td><strong>{{ product.name }}</strong><small>{{ product.unit_of_measure }} · {{ product.preferred_supplier.name if product.preferred_supplier else 'No preferred supplier' }}</small></td>
+          <td><code>{{ product.sku }}</code><small>{{ product.barcode or 'No barcode' }}</small></td>
+          <td>{{ product.category }}<small>{{ 'Perishable' if product.is_perishable else 'Non-perishable' }}</small></td>
+          <td>₹{{ '%.2f'|format(product.sell_price) }}<small>Cost ₹{{ '%.2f'|format(product.cost_price) }}</small></td>
+          <td><span class="{{ 'covered-tag' if product.is_active else 'action-tag' }}">{{ 'Active' if product.is_active else 'Archived' }}</span><small>Reorder at {{ product.reorder_point }}</small></td>
+          <td>
+            <div class="stock-pills">
+            {% for level in product.stock_levels %}
+              <span><b>{{ level.location.code }}</b> {{ level.quantity_available }} available <small>{{ level.quantity_on_hand }} on hand · {{ level.quantity_reserved }} reserved</small></span>
+            {% else %}
+              <span class="empty-pill">Not stocked</span>
+            {% endfor %}
+            </div>
+          </td>
+          <td>
+            {% if current_user.role in ['admin', 'manager'] %}
+            <div class="table-actions">
+              <a class="button secondary compact" href="{{ url_for('web.edit_product_form', product_id=product.id) }}">Edit</a>
+              {% if product.is_active %}
+                <form action="{{ url_for('web.archive_product_form', product_id=product.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button danger compact">Archive</button></form>
+              {% else %}
+                <form action="{{ url_for('web.restore_product_form', product_id=product.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button secondary compact">Restore</button></form>
+              {% endif %}
+            </div>
+            {% else %}<span class="muted">View only</span>{% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="empty-row">No products yet. Add one from Manage inventory or <code>POST /api/products</code>.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
