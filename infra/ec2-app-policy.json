@@ -5,7 +5,7 @@
       "Sid": "GenerateInventoryNarratives",
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
-      "Resource": "*"
+      "Resource": "arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0"
     },
     {
       "Sid": "SendInventoryReports",

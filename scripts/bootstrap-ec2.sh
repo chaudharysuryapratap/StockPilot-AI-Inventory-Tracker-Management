@@ -30,7 +30,19 @@ python3 -m venv "$APP_DIR/.venv"
 
 if [[ ! -f /etc/ai-inventory-tracker.env ]]; then
   install -m 600 -o root -g root "$APP_DIR/.env.example" /etc/ai-inventory-tracker.env
-  echo "Created /etc/ai-inventory-tracker.env. Fill it with RDS and AWS settings before starting the service."
+  echo "Created /etc/ai-inventory-tracker.env. Fill it with production settings, then rerun this script."
+  exit 2
+fi
+
+if ! grep -q '^APP_ENV=production$' /etc/ai-inventory-tracker.env \
+  || ! grep -q '^AUTO_CREATE_SCHEMA=false$' /etc/ai-inventory-tracker.env \
+  || grep -Eq '^(SECRET_KEY|POS_WEBHOOK_TOKEN|INTERNAL_API_TOKEN)=((replace-with-.*)|(local-.*))$' /etc/ai-inventory-tracker.env \
+  || ! grep -q '^SESSION_COOKIE_SECURE=true$' /etc/ai-inventory-tracker.env \
+  || ! grep -q '^ALLOW_WEB_SIGNUP=false$' /etc/ai-inventory-tracker.env \
+  || ! grep -Eq '^TRUSTED_HOSTS=.+$' /etc/ai-inventory-tracker.env \
+  || grep -q '^DATABASE_URL=sqlite:' /etc/ai-inventory-tracker.env; then
+  echo "Refusing to start: set production mode, disable automatic schema creation, configure RDS/trusted hosts/strong secrets/secure cookies, and disable web signup." >&2
+  exit 2
 fi
 
 install -m 755 "$APP_DIR/scripts/run-inventory-analysis" /usr/local/bin/run-inventory-analysis
@@ -39,7 +51,10 @@ install -m 644 "$APP_DIR/deploy/nginx/inventory-tracker.conf" /etc/nginx/sites-a
 ln -sf /etc/nginx/sites-available/inventory-tracker /etc/nginx/sites-enabled/inventory-tracker
 rm -f /etc/nginx/sites-enabled/default
 
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+install -d -m 750 -o "$APP_USER" -g "$APP_USER" "$APP_DIR/instance"
+chown -R root:"$APP_USER" "$APP_DIR"
+chown "$APP_USER:$APP_USER" "$APP_DIR/instance"
+chmod -R g-w,o-w "$APP_DIR"
 systemctl daemon-reload
 systemctl enable --now inventory-tracker
 nginx -t

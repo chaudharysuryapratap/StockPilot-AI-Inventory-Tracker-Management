@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from datetime import timedelta
 
-from app import db
+import pytest
+
+from app import create_app, db
 from app.models import DemandInsight, Product, Sale, SaleItem, StockLevel, Supplier, utcnow
 from app.services.forecast import ForecastService
 
@@ -24,6 +28,45 @@ def test_sale_webhook_decrements_once_and_is_idempotent(client, app, seeded_cata
     assert repeat.json["created"] is False
     with app.app_context():
         assert StockLevel.query.one().quantity == 7
+
+
+def test_production_configuration_rejects_placeholder_secrets(tmp_path):
+    with pytest.raises(RuntimeError, match="Unsafe production configuration"):
+        create_app(
+            {
+                "APP_ENV": "production",
+                "SQLALCHEMY_DATABASE_URI": f"sqlite:///{tmp_path / 'unsafe.db'}",
+                "SECRET_KEY": "local-development-only-change-me",
+                "POS_WEBHOOK_TOKEN": "local-pos-token",
+                "INTERNAL_API_TOKEN": "local-job-token",
+                "SESSION_COOKIE_SECURE": False,
+                "ALLOW_WEB_SIGNUP": True,
+            }
+        )
+
+
+def test_sale_webhook_rejects_conflicting_idempotency_retry(
+    client, app, seeded_catalog
+):
+    headers = {"X-POS-Token": "test-pos-token"}
+    payload = {
+        "external_sale_id": "sale-conflict-1",
+        "location_code": "TEST",
+        "items": [{"sku": "TEST-001", "quantity": 2, "unit_price": "5.00"}],
+    }
+    assert client.post("/api/webhooks/sales", json=payload, headers=headers).status_code == 201
+
+    conflicting = {
+        **payload,
+        "items": [{"sku": "TEST-001", "quantity": 3, "unit_price": "5.00"}],
+    }
+    response = client.post(
+        "/api/webhooks/sales", json=conflicting, headers=headers
+    )
+    assert response.status_code == 409
+    assert "different sale" in response.json["error"]
+    with app.app_context():
+        assert StockLevel.query.one().quantity_on_hand == Decimal("8.00")
 
 
 def test_sale_webhook_rejects_oversell_without_partial_update(client, app, seeded_catalog):
@@ -73,6 +116,10 @@ def test_dashboard_renders_after_analysis(client, app, seeded_catalog):
     response = client.get("/")
     assert response.status_code == 200
     assert b"Inventory, without the guesswork" in response.data
+    health = client.get("/api/health")
+    assert health.status_code == 200
+    assert health.json["database"] == "ok"
+    assert "Content-Security-Policy" in response.headers
 
 
 def test_staff_sign_in_protects_management_forms(client, app):

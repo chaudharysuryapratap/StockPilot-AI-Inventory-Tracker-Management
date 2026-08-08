@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from math import ceil
 
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from app import db
@@ -236,25 +237,22 @@ class ForecastService:
 
 def latest_insights(limit: int = 50) -> list[DemandInsight]:
     """Return only the newest analysis per product/location pair."""
-    rows = (
+    newest_ids = (
+        db.session.query(func.max(DemandInsight.id).label("id"))
+        .group_by(DemandInsight.product_id, DemandInsight.location_id)
+        .subquery()
+    )
+    return (
         DemandInsight.query.options(
             joinedload(DemandInsight.product), joinedload(DemandInsight.location)
         )
+        .join(newest_ids, DemandInsight.id == newest_ids.c.id)
         .join(Product, DemandInsight.product_id == Product.id)
         .filter(Product.is_active.is_(True))
-        .order_by(DemandInsight.generated_at.desc())
+        .order_by(DemandInsight.generated_at.desc(), DemandInsight.id.desc())
+        .limit(limit)
         .all()
     )
-    latest: list[DemandInsight] = []
-    seen: set[tuple[int, int]] = set()
-    for insight in rows:
-        key = (insight.product_id, insight.location_id)
-        if key not in seen:
-            seen.add(key)
-            latest.append(insight)
-        if len(latest) == limit:
-            break
-    return latest
 
 
 def serialize_insight(insight: DemandInsight) -> dict:
@@ -269,6 +267,7 @@ def serialize_insight(insight: DemandInsight) -> dict:
     )
     return {
         "id": insight.id,
+        "generated_at": insight.generated_at.isoformat(),
         "sku": insight.product.sku,
         "product": insight.product.name,
         "location": insight.location.code,

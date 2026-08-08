@@ -46,6 +46,9 @@ h3 { font-size: 14px; margin: 0 0 3px; }
 .topbar-actions { display: flex; align-items: center; gap: 12px; }
 .status-chip { background: #edf9f4; color: #13775b; border: 1px solid #d8f1e8; font-size: 12px; font-weight: 700; padding: 8px 10px; border-radius: 20px; }
 .status-chip i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #22b985; margin-right: 5px; vertical-align: 1px; }
+.status-chip.error { color: #a5454b; background: #fff0f0; border-color: #fbd7d9; }
+.status-chip.error i { background: var(--danger); }
+.mobile-nav { display: none; }
 .button { border: 0; cursor: pointer; border-radius: 8px; padding: 10px 14px; font: inherit; font-size: 13px; font-weight: 750; white-space: nowrap; }
 .button.primary { background: var(--blue); color: #fff; box-shadow: 0 6px 15px rgba(49,95,246,.2); }
 .button.primary:hover { background: #244ee0; }
@@ -340,7 +343,10 @@ code { color: #536b9d; font-family: "SFMono-Regular", Consolas, monospace; font-
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { display: none; }
-  .main-content { padding: 24px 16px 34px; }
+  .main-content { padding: 24px 16px 92px; }
+  .mobile-nav { position: fixed; z-index: 20; left: 10px; right: 10px; bottom: 10px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 7px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.96); box-shadow: 0 10px 30px rgba(33,52,88,.18); }
+  .mobile-nav a { padding: 9px 4px; border-radius: 8px; color: #536078; font-size: 10px; font-weight: 800; text-align: center; }
+  .mobile-nav a:hover { color: var(--blue); background: var(--blue-soft); }
   .topbar { align-items: flex-start; }
   .topbar-actions .status-chip { display: none; }
   .topbar-actions .user-chip { display: none; }

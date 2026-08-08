@@ -4,7 +4,9 @@ import io
 import sqlite3
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 
 from app import create_app, db
 from app.models import Bin, Product, StockLevel
@@ -15,11 +17,55 @@ from app.schema import (
     SPRINT_4_SCHEMA_VERSION,
     SPRINT_5_SCHEMA_VERSION,
     SPRINT_6_SCHEMA_VERSION,
+    SPRINT_7_SCHEMA_VERSION,
     migrate_schema,
 )
 
 
 INTERNAL_HEADERS = {"X-Internal-Token": "test-internal-token"}
+
+
+def test_explicit_migration_initializes_an_empty_database(tmp_path):
+    database_path = tmp_path / "empty-migration.db"
+    migration_app = create_app(
+        {
+            "TESTING": True,
+            "AUTO_CREATE_SCHEMA": False,
+            "SQLALCHEMY_DATABASE_URI": f"sqlite:///{database_path}",
+            "BEDROCK_ENABLED": False,
+            "SES_ENABLED": False,
+        }
+    )
+
+    with migration_app.app_context():
+        assert "products" not in inspect(db.engine).get_table_names()
+
+        first = migrate_schema()
+        second = migrate_schema()
+        tables = set(inspect(db.engine).get_table_names())
+
+        assert first.applied is True
+        assert first.version == SPRINT_7_SCHEMA_VERSION
+        assert second.applied is False
+        assert {"products", "stock_levels", "schema_migrations"} <= tables
+
+
+def test_unassigned_stock_position_is_unique(app, seeded_catalog):
+    with app.app_context():
+        existing = StockLevel.query.one()
+        db.session.add(
+            StockLevel(
+                product_id=existing.product_id,
+                location_id=existing.location_id,
+                bin_id=None,
+                quantity_on_hand=Decimal("1.00"),
+                quantity_reserved=Decimal("0.00"),
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.session.commit()
+        db.session.rollback()
+        assert StockLevel.query.count() == 1
 
 
 def test_stock_level_is_the_single_source_for_on_hand_and_available_stock(
@@ -299,7 +345,7 @@ def test_sprint1_migration_preserves_legacy_stock_data(tmp_path):
 
         assert first.applied is True
         assert second.applied is False
-        assert first.version == SPRINT_6_SCHEMA_VERSION
+        assert first.version == SPRINT_7_SCHEMA_VERSION
         assert first.applied_versions == (
             SPRINT_1_SCHEMA_VERSION,
             SPRINT_2_SCHEMA_VERSION,
@@ -307,6 +353,7 @@ def test_sprint1_migration_preserves_legacy_stock_data(tmp_path):
             SPRINT_4_SCHEMA_VERSION,
             SPRINT_5_SCHEMA_VERSION,
             SPRINT_6_SCHEMA_VERSION,
+            SPRINT_7_SCHEMA_VERSION,
         )
         assert "quantity_on_hand" in columns
         assert "quantity_reserved" in columns

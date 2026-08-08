@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+from sqlalchemy import Computed
 from sqlalchemy.orm import synonym
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -213,7 +214,10 @@ class StockLevel(db.Model):
     __tablename__ = "stock_levels"
     __table_args__ = (
         db.UniqueConstraint(
-            "product_id", "location_id", "bin_id", name="uq_stock_product_location_bin"
+            "product_id",
+            "location_id",
+            "position_bin_key",
+            name="uq_stock_product_location_position",
         ),
         db.CheckConstraint(
             "quantity_on_hand >= 0", name="ck_stock_on_hand_non_negative"
@@ -232,6 +236,13 @@ class StockLevel(db.Model):
         db.Integer, db.ForeignKey("inventory_locations.id"), nullable=False
     )
     bin_id = db.Column(db.Integer, db.ForeignKey("bins.id"), nullable=True)
+    # SQL unique constraints treat NULL values as distinct. The generated key
+    # maps an unassigned bin to zero, preventing duplicate location-level rows
+    # during concurrent adjustments, transfers, or return receipts.
+    position_bin_key = db.Column(
+        db.Integer,
+        Computed("COALESCE(bin_id, 0)", persisted=False),
+    )
     quantity_on_hand = db.Column(
         db.Numeric(12, 2), nullable=False, default=Decimal("0.00")
     )
@@ -656,6 +667,14 @@ class ReturnEvent(db.Model):
 
 class DemandInsight(db.Model):
     __tablename__ = "demand_insights"
+    __table_args__ = (
+        db.Index(
+            "ix_insight_product_location_latest",
+            "product_id",
+            "location_id",
+            "id",
+        ),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False)

@@ -41,7 +41,7 @@
     <div>
       <span class="metric-label">Latest analysis</span>
       <strong>{{ 'Ready' if insights else 'Pending' }}</strong>
-      <small>{% if insights %}Forecasts are available{% else %}Run the analysis command{% endif %}</small>
+      <small>{% if insights %}Generated {{ insights[0].generated_at[:16]|replace('T', ' ') }} UTC{% else %}Run the analysis command{% endif %}</small>
     </div>
   </article>
 </section>

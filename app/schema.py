@@ -14,6 +14,7 @@ SPRINT_3_SCHEMA_VERSION = "20260806_sprint3_barcode_auth_roles"
 SPRINT_4_SCHEMA_VERSION = "20260806_sprint4_outbound_fulfillment"
 SPRINT_5_SCHEMA_VERSION = "20260806_sprint5_suppliers_reporting_alerts"
 SPRINT_6_SCHEMA_VERSION = "20260806_sprint6_picker_explainability_returns"
+SPRINT_7_SCHEMA_VERSION = "20260808_single_workspace_hardening"
 SCHEMA_VERSIONS = (
     SPRINT_1_SCHEMA_VERSION,
     SPRINT_2_SCHEMA_VERSION,
@@ -21,6 +22,7 @@ SCHEMA_VERSIONS = (
     SPRINT_4_SCHEMA_VERSION,
     SPRINT_5_SCHEMA_VERSION,
     SPRINT_6_SCHEMA_VERSION,
+    SPRINT_7_SCHEMA_VERSION,
 )
 
 
@@ -588,6 +590,73 @@ def _upgrade_sprint6(connection) -> None:
     ReturnEvent.__table__.create(bind=connection, checkfirst=True)
 
 
+def _upgrade_sprint7(connection) -> None:
+    """Enforce the documented single workspace and collision-safe stock positions."""
+
+    workspace_count = connection.execute(
+        sa.text("SELECT COUNT(*) FROM workspaces")
+    ).scalar_one()
+    if int(workspace_count) > 1:
+        raise RuntimeError(
+            "StockPilot now supports one workspace; consolidate workspace rows before migrating"
+        )
+
+    workspace_id, _ = _seed_workspace_and_actor(connection)
+    connection.execute(
+        sa.text(
+            "UPDATE inventory_locations SET workspace_id = :workspace_id "
+            "WHERE workspace_id IS NULL"
+        ),
+        {"workspace_id": workspace_id},
+    )
+
+    duplicate = connection.execute(
+        sa.text(
+            "SELECT product_id, location_id, COUNT(*) AS row_count "
+            "FROM stock_levels WHERE bin_id IS NULL "
+            "GROUP BY product_id, location_id HAVING COUNT(*) > 1 LIMIT 1"
+        )
+    ).first()
+    if duplicate:
+        raise RuntimeError(
+            "Duplicate unassigned stock positions exist; consolidate them before migrating"
+        )
+
+    if "position_bin_key" not in _columns(connection, "stock_levels"):
+        connection.execute(
+            sa.text(
+                "ALTER TABLE stock_levels ADD COLUMN position_bin_key INTEGER "
+                "GENERATED ALWAYS AS (COALESCE(bin_id, 0)) VIRTUAL"
+            )
+        )
+
+    desired_columns = {"product_id", "location_id", "position_bin_key"}
+    desired_exists = any(
+        set(item.get("column_names") or ()) == desired_columns
+        for item in _unique_constraints(connection, "stock_levels")
+    ) or any(
+        item.get("unique")
+        and set(item.get("column_names") or ()) == desired_columns
+        for item in sa.inspect(connection).get_indexes("stock_levels")
+    )
+    if not desired_exists:
+        connection.execute(
+            sa.text(
+                "CREATE UNIQUE INDEX uq_stock_product_location_position "
+                "ON stock_levels (product_id, location_id, position_bin_key)"
+            )
+        )
+
+    indexes = _indexes(connection, "demand_insights")
+    if "ix_insight_product_location_latest" not in indexes:
+        connection.execute(
+            sa.text(
+                "CREATE INDEX ix_insight_product_location_latest "
+                "ON demand_insights (product_id, location_id, id)"
+            )
+        )
+
+
 def migrate_schema() -> MigrationResult:
     """Apply all pending StockPilot migrations to SQLite or RDS MySQL."""
     applied_versions: list[str] = []
@@ -602,6 +671,12 @@ def migrate_schema() -> MigrationResult:
         tables = set(sa.inspect(connection).get_table_names())
         required = {"products", "stock_levels", "sale_items", "inventory_movements"}
         missing = required - tables
+        if missing == required:
+            # A new production database is initialized only by this explicit CLI
+            # migration path; normal web-process startup never creates schema.
+            db.metadata.create_all(bind=connection)
+            tables = set(sa.inspect(connection).get_table_names())
+            missing = required - tables
         if missing:
             raise RuntimeError(
                 "Cannot apply schema migrations; missing base tables: "
@@ -663,8 +738,16 @@ def migrate_schema() -> MigrationResult:
             )
             applied_versions.append(SPRINT_6_SCHEMA_VERSION)
 
+        if SPRINT_7_SCHEMA_VERSION not in existing:
+            _upgrade_sprint7(connection)
+            connection.execute(
+                sa.text("INSERT INTO schema_migrations (version) VALUES (:version)"),
+                {"version": SPRINT_7_SCHEMA_VERSION},
+            )
+            applied_versions.append(SPRINT_7_SCHEMA_VERSION)
+
     return MigrationResult(
-        version=applied_versions[-1] if applied_versions else SPRINT_6_SCHEMA_VERSION,
+        version=applied_versions[-1] if applied_versions else SPRINT_7_SCHEMA_VERSION,
         applied=bool(applied_versions),
         applied_versions=tuple(applied_versions),
     )
@@ -675,8 +758,7 @@ def current_schema_versions() -> list[str]:
     if "schema_migrations" not in inspector.get_table_names():
         return []
     with db.engine.connect() as connection:
-        return list(
-            connection.execute(
-                sa.text("SELECT version FROM schema_migrations ORDER BY applied_at")
-            ).scalars()
+        recorded = set(
+            connection.execute(sa.text("SELECT version FROM schema_migrations")).scalars()
         )
+    return [version for version in SCHEMA_VERSIONS if version in recorded]

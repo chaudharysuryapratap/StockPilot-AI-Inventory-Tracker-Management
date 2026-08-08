@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import time
 from datetime import timedelta
 from functools import wraps
 from io import BytesIO
@@ -22,7 +23,8 @@ from flask import (
     session,
     url_for,
 )
-from sqlalchemy import func
+from sqlalchemy import func, text
+from sqlalchemy.orm import selectinload
 
 from app import db
 from app.models import (
@@ -55,6 +57,7 @@ from app.services.inventory import (
     CapacityExceededError,
     InsufficientStockError,
     InventoryService,
+    InventoryConflictError,
     UnknownInventoryReferenceError,
     serialize_sale,
 )
@@ -132,7 +135,12 @@ def _current_actor() -> User:
     actor = getattr(g, "current_user", None) or _session_user()
     if actor:
         return actor
-    return resolve_actor(request.headers.get("X-Actor-Email"))
+    try:
+        return resolve_actor(request.headers.get("X-Actor-Email"))
+    except ValueError as error:
+        abort(403, description=str(error))
+    except RuntimeError as error:
+        abort(503, description=str(error))
 
 
 def _validate_csrf() -> None:
@@ -149,6 +157,28 @@ def _safe_next_target(value: str) -> str | None:
     if parsed.path.startswith("//"):
         return None
     return value
+
+
+def _login_attempt_key(identifier: object) -> str:
+    return f"{request.remote_addr or 'unknown'}:{str(identifier or '').strip().lower()}"
+
+
+def _login_is_rate_limited(identifier: object) -> bool:
+    attempts = current_app.extensions.setdefault("stockpilot_login_attempts", {})
+    key = _login_attempt_key(identifier)
+    cutoff = time.monotonic() - current_app.config["LOGIN_WINDOW_SECONDS"]
+    recent = [timestamp for timestamp in attempts.get(key, []) if timestamp >= cutoff]
+    attempts[key] = recent
+    return len(recent) >= current_app.config["LOGIN_MAX_ATTEMPTS"]
+
+
+def _record_login_result(identifier: object, *, succeeded: bool) -> None:
+    attempts = current_app.extensions.setdefault("stockpilot_login_attempts", {})
+    key = _login_attempt_key(identifier)
+    if succeeded:
+        attempts.pop(key, None)
+    else:
+        attempts.setdefault(key, []).append(time.monotonic())
 
 
 def roles_required(*allowed_roles: str):
@@ -215,6 +245,14 @@ def require_staff_login():
     if request.endpoint in {"web.login", "web.signup"}:
         return None
     if g.current_user is None:
+        if authentication_setup_required() and not current_app.config["ALLOW_WEB_SIGNUP"]:
+            abort(
+                503,
+                description=(
+                    "administrator setup is required; run "
+                    "'flask --app run create-admin' on the server"
+                ),
+            )
         destination = "web.signup" if authentication_setup_required() else "web.login"
         return redirect(url_for(destination, next=request.path))
     if request.method == "POST":
@@ -234,6 +272,7 @@ def inject_csrf_token():
         "current_user": getattr(g, "current_user", None),
         "auth_enabled": current_app.config["STAFF_AUTH_ENABLED"],
         "role_labels": ROLE_LABELS,
+        "report_currency": current_app.config["REPORT_CURRENCY"],
     }
 
 
@@ -393,17 +432,24 @@ def login():
         return redirect(url_for("web.signup"))
     if request.method == "POST":
         _validate_csrf()
+        identifier = request.form.get(
+            "identifier", request.form.get("username", "")
+        )
+        if _login_is_rate_limited(identifier):
+            abort(429, description="too many sign-in attempts; try again later")
         actor = authenticate(
-            request.form.get("identifier", request.form.get("username", "")),
+            identifier,
             request.form.get("password", ""),
         )
         if actor:
+            _record_login_result(identifier, succeeded=True)
             session.clear()
             session["user_id"] = actor.id
             session["csrf_token"] = secrets.token_urlsafe(32)
             session.permanent = True
             target = request.args.get("next", "")
             return redirect(_safe_next_target(target) or url_for("web.dashboard"))
+        _record_login_result(identifier, succeeded=False)
         flash("Incorrect email or password.", "error")
     return render_template("login.html")
 
@@ -412,6 +458,8 @@ def login():
 def signup():
     if not current_app.config["STAFF_AUTH_ENABLED"]:
         return redirect(url_for("web.dashboard"))
+    if not current_app.config["ALLOW_WEB_SIGNUP"]:
+        abort(404)
     if not authentication_setup_required():
         return redirect(url_for("web.login"))
     if request.method == "POST":
@@ -1171,7 +1219,24 @@ def send_critical_alert_form():
 
 @api_bp.get("/health")
 def health():
-    return jsonify({"status": "ok", "service": "ai-inventory-tracker"})
+    try:
+        db.session.execute(text("SELECT 1"))
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Database readiness check failed")
+        return (
+            jsonify(
+                {
+                    "status": "unavailable",
+                    "service": "ai-inventory-tracker",
+                    "database": "unavailable",
+                }
+            ),
+            503,
+        )
+    return jsonify(
+        {"status": "ok", "service": "ai-inventory-tracker", "database": "ok"}
+    )
 
 
 @web_bp.get("/service-worker.js")
@@ -1348,23 +1413,44 @@ def restore_supplier_api(supplier_id: int):
 @api_bp.get("/products")
 @api_read_access
 def products_api():
+    actor = _current_actor()
     include_archived = request.args.get("include_archived", "").lower() in {
         "1",
         "true",
         "yes",
     }
-    query = Product.query
+    query = Product.query.options(
+        selectinload(Product.stock_levels).selectinload(StockLevel.location),
+        selectinload(Product.stock_levels).selectinload(StockLevel.bin),
+        selectinload(Product.preferred_supplier),
+    )
     if not include_archived:
         query = query.filter_by(is_active=True)
     return jsonify(
-        {"products": [serialize_product(product) for product in query.order_by(Product.name)]}
+        {
+            "products": [
+                serialize_product(
+                    product,
+                    include_sensitive=actor.role != "picker",
+                )
+                for product in query.order_by(Product.name)
+            ]
+        }
     )
 
 
 @api_bp.get("/products/<int:product_id>")
 @api_read_access
 def product_api(product_id: int):
-    return jsonify({"product": serialize_product(db.get_or_404(Product, product_id))})
+    actor = _current_actor()
+    return jsonify(
+        {
+            "product": serialize_product(
+                db.get_or_404(Product, product_id),
+                include_sensitive=actor.role != "picker",
+            )
+        }
+    )
 
 
 @api_bp.get("/barcodes/lookup")
@@ -1775,6 +1861,8 @@ def sales_webhook():
     except (ValueError, UnknownInventoryReferenceError) as error:
         return jsonify({"error": str(error)}), 400
     except InsufficientStockError as error:
+        return jsonify({"error": str(error)}), 409
+    except InventoryConflictError as error:
         return jsonify({"error": str(error)}), 409
     return jsonify({"sale": serialize_sale(sale), "created": created}), 201 if created else 200
 

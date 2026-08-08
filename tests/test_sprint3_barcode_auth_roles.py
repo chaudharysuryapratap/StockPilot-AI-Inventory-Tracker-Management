@@ -225,6 +225,12 @@ def test_picker_can_scan_and_transfer_but_cannot_see_cost(client, app, seeded_ca
     assert lookup.json["product"]["sku"] == "TEST-001"
     assert lookup.json["product"]["category"] == "General"
     assert "cost_price" not in lookup.json["product"]
+    product_feed = client.get("/api/products")
+    assert product_feed.status_code == 200
+    assert "cost_price" not in product_feed.json["products"][0]
+    products_page = client.get("/products")
+    assert products_page.status_code == 200
+    assert b"Restricted" in products_page.data
 
     with client.session_transaction() as browser_session:
         token = browser_session["csrf_token"]
@@ -296,6 +302,20 @@ def test_admin_user_management_validates_roles_and_protects_current_admin(client
     with app.app_context():
         assert db.session.get(User, current_id).role == "admin"
         assert db.session.get(User, second_id).role == "manager"
+
+
+def test_login_is_rate_limited_after_repeated_failures(client, app):
+    _bootstrap_admin(client, app)
+    _logout(client)
+    token = _csrf(client, "/login")
+    payload = {
+        "csrf_token": token,
+        "identifier": "admin@freshmart.test",
+        "password": "definitely-wrong",
+    }
+    for _ in range(app.config["LOGIN_MAX_ATTEMPTS"]):
+        assert client.post("/login", data=payload).status_code == 200
+    assert client.post("/login", data=payload).status_code == 429
 
 
 def test_sprint3_migration_normalizes_legacy_roles_and_is_idempotent(app):

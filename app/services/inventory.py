@@ -36,6 +36,12 @@ class UnknownInventoryReferenceError(InventoryError):
     pass
 
 
+class InventoryConflictError(InventoryError):
+    """An idempotency key was reused for a different inventory operation."""
+
+    pass
+
+
 def _quantity(value: object, field_name: str, *, positive: bool = False) -> Decimal:
     if isinstance(value, bool):
         raise ValueError(f"{field_name} must be a {'positive' if positive else 'non-zero'} quantity")
@@ -61,7 +67,61 @@ def _parse_datetime(value: object | None) -> datetime:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
         raise ValueError("occurred_at must be an ISO-8601 timestamp") from error
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _unit_price(value: object, sku: str) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"unit_price for {sku} must be a non-negative amount")
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError, AttributeError) as error:
+        raise ValueError(f"unit_price for {sku} must be numeric") from error
+    if (
+        not amount.is_finite()
+        or amount < 0
+        or amount > Decimal("99999999.99")
+        or amount.as_tuple().exponent < -2
+    ):
+        raise ValueError(
+            f"unit_price for {sku} must be between 0 and 99999999.99 "
+            "with at most 2 decimal places"
+        )
+    return amount.quantize(Decimal("0.01"))
+
+
+def _matching_sale(
+    sale: Sale,
+    *,
+    source: str,
+    location_id: int,
+    occurred_at: datetime | None,
+    requested: dict[str, dict],
+) -> bool:
+    existing_items = {
+        item.product.sku: {
+            "quantity": Decimal(item.quantity),
+            "unit_price": (
+                Decimal(item.unit_price) if item.unit_price is not None else None
+            ),
+        }
+        for item in sale.items
+    }
+    if sale.source != source or sale.location_id != location_id:
+        return False
+    if occurred_at is not None:
+        saved_time = sale.occurred_at
+        if saved_time.tzinfo is None:
+            saved_time = saved_time.replace(tzinfo=timezone.utc)
+        else:
+            saved_time = saved_time.astimezone(timezone.utc)
+        if saved_time != occurred_at:
+            return False
+    return existing_items == requested
 
 
 def serialize_sale(sale: Sale) -> dict:
@@ -100,9 +160,14 @@ class InventoryService:
         if not isinstance(raw_items, list) or not raw_items:
             raise ValueError("items must be a non-empty list")
 
-        existing = Sale.query.filter_by(external_id=external_id).first()
-        if existing:
-            return existing, False
+        source = str(payload.get("source", "pos") or "pos").strip()
+        if len(source) > 64:
+            raise ValueError("source must be 64 characters or fewer")
+        occurred_at = (
+            _parse_datetime(payload.get("occurred_at"))
+            if payload.get("occurred_at")
+            else None
+        )
 
         location = InventoryLocation.query.filter_by(
             code=location_code, is_active=True
@@ -124,16 +189,35 @@ class InventoryService:
             quantity = _quantity(
                 raw_item.get("quantity"), f"quantity for {sku}", positive=True
             )
+            unit_price = _unit_price(raw_item.get("unit_price"), sku)
             current = requested.setdefault(
-                sku, {"quantity": Decimal("0.00"), "unit_price": raw_item.get("unit_price")}
+                sku, {"quantity": Decimal("0.00"), "unit_price": unit_price}
             )
+            if current["unit_price"] != unit_price:
+                raise ValueError(
+                    f"duplicate lines for {sku} must use the same unit_price"
+                )
             current["quantity"] += quantity
+
+        existing = Sale.query.filter_by(external_id=external_id).first()
+        if existing:
+            if not _matching_sale(
+                existing,
+                source=source,
+                location_id=location.id,
+                occurred_at=occurred_at,
+                requested=requested,
+            ):
+                raise InventoryConflictError(
+                    "external_sale_id already belongs to a different sale"
+                )
+            return existing, False
 
         sale = Sale(
             external_id=external_id,
-            source=str(payload.get("source", "pos"))[:64],
+            source=source,
             location=location,
-            occurred_at=_parse_datetime(payload.get("occurred_at")),
+            occurred_at=occurred_at or utcnow(),
         )
 
         try:
@@ -170,19 +254,12 @@ class InventoryService:
                         f"of '{sku}' are available at {location_code}"
                     )
 
-                unit_price = requested_item["unit_price"]
-                if unit_price is not None:
-                    try:
-                        unit_price = Decimal(str(unit_price)).quantize(Decimal("0.01"))
-                    except (InvalidOperation, ValueError) as error:
-                        raise ValueError(f"unit_price for {sku} must be numeric") from error
-
                 db.session.add(
                     SaleItem(
                         sale=sale,
                         product=product,
                         quantity=requested_item["quantity"],
-                        unit_price=unit_price,
+                        unit_price=requested_item["unit_price"],
                     )
                 )
                 remaining = requested_item["quantity"]
@@ -217,7 +294,17 @@ class InventoryService:
             # the same time. If it is something else, surface the original issue.
             duplicate = Sale.query.filter_by(external_id=external_id).first()
             if duplicate:
-                return duplicate, False
+                if _matching_sale(
+                    duplicate,
+                    source=source,
+                    location_id=location.id,
+                    occurred_at=occurred_at,
+                    requested=requested,
+                ):
+                    return duplicate, False
+                raise InventoryConflictError(
+                    "external_sale_id already belongs to a different sale"
+                )
             raise
         except Exception:
             db.session.rollback()

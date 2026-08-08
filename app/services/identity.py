@@ -7,7 +7,7 @@ from app.models import User, Workspace
 
 
 def ensure_default_identity(*, commit: bool = True) -> User:
-    """Return the durable bootstrap/machine actor without replacing its history."""
+    """Return the durable actor for StockPilot's one supported workspace."""
 
     workspace_name = current_app.config["DEFAULT_WORKSPACE_NAME"]
     actor_email = current_app.config["DEFAULT_STAFF_EMAIL"].strip().lower()
@@ -15,7 +15,12 @@ def ensure_default_identity(*, commit: bool = True) -> User:
         current_app.config.get("STAFF_USERNAME") or "StockPilot Staff"
     ).strip()
 
-    workspace = Workspace.query.order_by(Workspace.id).first()
+    workspaces = Workspace.query.order_by(Workspace.id).limit(2).all()
+    if len(workspaces) > 1:
+        raise RuntimeError(
+            "StockPilot is configured for a single workspace, but multiple workspace rows exist"
+        )
+    workspace = workspaces[0] if workspaces else None
     if workspace is None:
         workspace = Workspace(name=workspace_name)
         db.session.add(workspace)
@@ -39,11 +44,14 @@ def ensure_default_identity(*, commit: bool = True) -> User:
 
 
 def resolve_actor(email: str | None = None) -> User:
-    """Resolve a trusted API actor or fall back to the shared Sprint 2 actor."""
+    """Resolve an optional trusted actor inside the single configured workspace."""
 
     if email:
+        if not current_app.config.get("ALLOW_ACTOR_HEADER", False):
+            raise ValueError("X-Actor-Email attribution is disabled")
+        default_actor = ensure_default_identity(commit=False)
         actor = User.query.filter_by(email=email.strip().lower(), is_active=True).first()
-        if actor is None:
+        if actor is None or actor.workspace_id != default_actor.workspace_id:
             raise ValueError("X-Actor-Email does not match an active user")
         return actor
     return ensure_default_identity()

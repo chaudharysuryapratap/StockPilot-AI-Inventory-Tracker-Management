@@ -66,8 +66,8 @@
         <div class="sidebar-footer">
           <span class="pulse"></span>
           <div>
-            <strong>Live inventory</strong>
-            <small>POS events update stock instantly</small>
+            <strong>Inventory controls</strong>
+            <small>Authoritative stock ledger</small>
           </div>
         </div>
       </aside>
@@ -79,11 +79,11 @@
             <h1>{% block heading %}Good afternoon{% endblock %}</h1>
           </div>
           <div class="topbar-actions">
-            <span class="status-chip"><i></i> System online</span>
+            <span id="system-status" class="status-chip" data-health-url="{{ url_for('api.health') }}"><i></i> Checking system</span>
             {% if current_user %}
               <span class="user-chip"><b>{{ current_user.name }}</b><small>{{ role_labels.get(current_user.role, current_user.role)|title }}</small></span>
             {% endif %}
-            <button class="button secondary" type="button" onclick="window.location.reload()">Refresh</button>
+            <a class="button secondary" href="{{ request.full_path }}">Refresh</a>
             {% if auth_enabled and current_user %}
               <form action="{{ url_for('web.logout') }}" method="post" class="logout-form">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -104,6 +104,13 @@
         {% block content %}{% endblock %}
       </main>
     </div>
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="{{ url_for('web.dashboard') }}">Overview</a>
+      <a href="{{ url_for('web.products_page') }}">Stock</a>
+      <a href="{{ url_for('web.picker_page') }}">Picker</a>
+      <a href="{{ url_for('web.scanner_page') }}">Scan</a>
+    </nav>
+    <script src="{{ url_for('static', filename='app-shell.js') }}" defer></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

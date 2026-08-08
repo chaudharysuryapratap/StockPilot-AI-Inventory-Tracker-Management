@@ -18,6 +18,7 @@ def app(tmp_path):
             "SES_ENABLED": False,
             "FORECAST_LOOKBACK_DAYS": 28,
             "STAFF_AUTH_ENABLED": False,
+            "ALLOW_ACTOR_HEADER": True,
         }
     )
     yield app

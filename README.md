@@ -2,6 +2,10 @@
 
 A portfolio-ready inventory system for retailers and restaurants. It consumes sale events in near real time, updates stock safely, forecasts demand from historical sales, maintains supplier, fulfilment, and returns operations, exports risk/valuation reports, and emails owner-ready reorder actions.
 
+StockPilot deliberately supports one business workspace per deployment. The
+workspace row remains the ownership and audit boundary, but a database with
+multiple workspace rows fails closed instead of exposing partially scoped data.
+
 The application is deliberately split into two kinds of intelligence:
 
 - A transparent forecasting engine calculates daily demand, lead-time coverage, stockout date, and reorder quantity from the sales record.
@@ -33,6 +37,7 @@ flowchart TD
 | Near-real-time stock updates | Idempotent `POST /api/webhooks/sales` POS webhook with row locking and transactional rollback |
 | Multi-location/bin inventory | Product stock is stored by warehouse and optional bin, with validated bin capacity limits |
 | Single stock authority | `stock_levels.quantity_on_hand` and `quantity_reserved` drive every stock badge, API response, forecast, sale, and adjustment |
+| Collision-safe positions | A generated position key prevents duplicate unassigned stock rows under concurrent writes |
 | Atomic stock transfers | Idempotent location/bin transfers protect reserved stock and update both positions in one transaction |
 | Outbound order fulfilment | Manual sales orders reserve exact bin positions, generate pick lists, enforce pick/pack gates, and deduct reserved stock once on shipment |
 | Location management | Validated add/edit operations for warehouse locations and bins, including activation and capacity safeguards |
@@ -186,7 +191,12 @@ curl -X POST http://127.0.0.1:5000/api/transfers \
   }'
 ```
 
-Browser transfers automatically use the signed-in named user for audit attribution. Trusted machine integrations remain token-protected and may select an existing active audit actor with `X-Actor-Email`.
+Browser transfers automatically use the signed-in named user for audit attribution. Trusted machine integrations remain token-protected and use the durable service actor by default.
+
+`X-Actor-Email` attribution is disabled by default. A private integration may
+enable `ALLOW_ACTOR_HEADER=true`; the selected actor must belong to the one
+configured workspace. Keep it disabled when machine actions should use the
+durable service actor.
 
 ### Sales-order fulfilment contract
 
@@ -245,9 +255,9 @@ curl -X POST http://127.0.0.1:5000/api/products/import \
   -F 'file=@examples/products-import.csv'
 ```
 
-### Sprint 1–6 database migrations
+### Sprint 1–7 database migrations
 
-`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprint 1 renames the legacy `quantity` field to `quantity_on_hand`, adds `quantity_reserved`, and backfills product fields. Sprint 2 adds workspaces/users for durable audit identity, location state, bins, bin-aware stock positions, transfer records, and user/bin fields on movements. It also replaces the legacy product/location uniqueness rule without deleting existing balances. Sprint 3 activates the durable user records as named accounts, normalizes legacy roles, and preserves every existing movement/user foreign key. Sprint 4 adds sales orders, order items, and exact stock-level allocations for the reserved-to-shipped outbound lifecycle. Sprint 5 migrates legacy supplier email/phone fields into workspace-scoped supplier records, preserves existing supplier/product links, and adds alert-delivery audit records. Sprint 6 backfills stored forecast factors and adds RMA headers, lines, partial receipts, dispositions, actors, and append-only workflow events.
+`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprint 1 renames the legacy `quantity` field to `quantity_on_hand`, adds `quantity_reserved`, and backfills product fields. Sprint 2 adds workspaces/users for durable audit identity, location state, bins, bin-aware stock positions, transfer records, and user/bin fields on movements. It also replaces the legacy product/location uniqueness rule without deleting existing balances. Sprint 3 activates the durable user records as named accounts, normalizes legacy roles, and preserves every existing movement/user foreign key. Sprint 4 adds sales orders, order items, and exact stock-level allocations for the reserved-to-shipped outbound lifecycle. Sprint 5 migrates legacy supplier email/phone fields into workspace-scoped supplier records, preserves existing supplier/product links, and adds alert-delivery audit records. Sprint 6 backfills stored forecast factors and adds RMA headers, lines, partial receipts, dispositions, actors, and append-only workflow events. Sprint 7 formalizes the single-workspace invariant, adds collision-safe stock-position uniqueness, and indexes latest forecast lookups.
 
 Recorded revisions:
 
@@ -257,6 +267,7 @@ Recorded revisions:
 - `20260806_sprint4_outbound_fulfillment`
 - `20260806_sprint5_suppliers_reporting_alerts`
 - `20260806_sprint6_picker_explainability_returns`
+- `20260808_single_workspace_hardening`
 
 Run `flask --app run schema-version` to inspect the applied revisions.
 
@@ -269,10 +280,17 @@ Create a MySQL RDS instance in private subnets. Its security group should allow 
 Create a database and set this in `/etc/ai-inventory-tracker.env` on EC2:
 
 ```dotenv
+APP_ENV=production
+AUTO_CREATE_SCHEMA=false
 DATABASE_URL=mysql+pymysql://inventory_admin:YOUR_PASSWORD@YOUR_RDS_ENDPOINT:3306/inventory_tracker
-SECRET_KEY=long-random-value
-POS_WEBHOOK_TOKEN=long-random-value
-INTERNAL_API_TOKEN=long-random-value
+SECRET_KEY=replace-with-at-least-32-random-characters
+POS_WEBHOOK_TOKEN=replace-with-at-least-32-random-characters
+INTERNAL_API_TOKEN=replace-with-at-least-32-random-characters
+ALLOW_WEB_SIGNUP=false
+ALLOW_ACTOR_HEADER=false
+SESSION_COOKIE_SECURE=true
+TRUST_PROXY_HEADERS=true
+TRUSTED_HOSTS=inventory.example.com
 CRITICAL_STOCKOUT_DAYS=3
 REPORT_CURRENCY=INR
 AWS_REGION=ap-south-1
@@ -283,7 +301,7 @@ SES_FROM_EMAIL=verified-sender@yourdomain.com
 ALERT_RECIPIENTS=owner@yourdomain.com
 ```
 
-Set `STAFF_AUTH_ENABLED=true`, leave `STAFF_USERNAME` and `STAFF_PASSWORD` blank on a new installation, and set `SESSION_COOKIE_SECURE=true` when HTTPS is configured. Before opening the service publicly, create the first administrator with `flask --app run create-admin`; the `/signup` flow is an equivalent first-run option. Existing installations that still define the former shared username/password migrate those credentials once into the durable Admin user. Browser forms use session-backed CSRF tokens, passwords are stored only as Werkzeug hashes, and private read APIs require either a user session or the internal machine token. Use Secrets Manager or Parameter Store in a mature deployment.
+Set `STAFF_AUTH_ENABLED=true`, leave `STAFF_USERNAME` and `STAFF_PASSWORD` blank on a new installation, and set `SESSION_COOKIE_SECURE=true` when HTTPS is configured. Before opening the service publicly, create the first administrator with `flask --app run create-admin`. The `/signup` flow is intended only for controlled development or first-run environments where `ALLOW_WEB_SIGNUP=true`; it stays disabled in production. Existing installations that still define the former shared username/password migrate those credentials once into the durable Admin user. Browser forms use session-backed CSRF tokens, passwords are stored only as Werkzeug hashes, and private read APIs require either a user session or the internal machine token. Use Secrets Manager or Parameter Store in a mature deployment.
 
 ### 2. Create and secure EC2
 
@@ -299,6 +317,11 @@ Copy this project to the instance, then run:
 ```bash
 sudo ./scripts/bootstrap-ec2.sh /path/to/ai-inventory-tracker
 ```
+
+On its first run the script creates `/etc/ai-inventory-tracker.env` and stops.
+Fill that file with the production values above and rerun the script. It refuses
+to start the service with placeholder secrets, SQLite, insecure cookies, an
+open signup page, or missing trusted hosts.
 
 The script installs Gunicorn + Nginx, creates a non-login service user, prepares `/etc/ai-inventory-tracker.env`, and registers `/usr/local/bin/run-inventory-analysis` for SSM.
 
@@ -362,5 +385,5 @@ examples/            Sample product CSV import file
 infra/               EC2 IAM policy and Scheduler → Lambda → SSM template
 scripts/             EC2 bootstrap and scheduled-job wrapper
 deploy/              Gunicorn systemd unit and Nginx reverse-proxy config
-tests/               51 regression tests across Sprints 1–6, including migrations, CRUD, auth, barcode, transfers, fulfilment, reports, explainability, mobile picker, and RMAs
+tests/               56 regression tests across Sprints 1–7, including migrations, CRUD, auth, barcode, transfers, fulfilment, reports, explainability, mobile picker, RMAs, idempotency conflicts, production configuration, and stock-position uniqueness
 ```

@@ -301,7 +301,7 @@ class ProductService:
             ) from error
 
 
-def serialize_product(product: Product) -> dict:
+def serialize_product(product: Product, *, include_sensitive: bool = True) -> dict:
     stock_rows = []
     total_on_hand = Decimal("0")
     total_reserved = Decimal("0")
@@ -319,7 +319,7 @@ def serialize_product(product: Product) -> dict:
         if level.bin is not None:
             stock_row["bin"] = level.bin.code
         stock_rows.append(stock_row)
-    return {
+    data = {
         "id": product.id,
         "sku": product.sku,
         "barcode": product.barcode,
@@ -342,6 +342,11 @@ def serialize_product(product: Product) -> dict:
             "quantity_available": number_for_json(total_on_hand - total_reserved),
         },
     }
+    if not include_sensitive:
+        data.pop("cost_price", None)
+        data.pop("preferred_supplier_id", None)
+        data.pop("supplier", None)
+    return data
 
 
 @dataclass

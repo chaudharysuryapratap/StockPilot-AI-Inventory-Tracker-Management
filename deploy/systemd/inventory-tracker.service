@@ -15,6 +15,17 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/opt/ai-inventory-tracker/instance
+UMask=0027
 
 [Install]
 WantedBy=multi-user.target

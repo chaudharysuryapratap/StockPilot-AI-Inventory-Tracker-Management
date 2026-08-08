@@ -26,10 +26,10 @@
       <tbody>
       {% for product in products %}
         <tr>
-          <td><strong>{{ product.name }}</strong><small>{{ product.unit_of_measure }} · {{ product.preferred_supplier.name if product.preferred_supplier else 'No preferred supplier' }}</small></td>
+          <td><strong>{{ product.name }}</strong><small>{{ product.unit_of_measure }}{% if current_user.role != 'picker' %} · {{ product.preferred_supplier.name if product.preferred_supplier else 'No preferred supplier' }}{% endif %}</small></td>
           <td><code>{{ product.sku }}</code><small>{{ product.barcode or 'No barcode' }}</small></td>
           <td>{{ product.category }}<small>{{ 'Perishable' if product.is_perishable else 'Non-perishable' }}</small></td>
-          <td>₹{{ '%.2f'|format(product.sell_price) }}<small>Cost ₹{{ '%.2f'|format(product.cost_price) }}</small></td>
+          <td>{% if current_user.role == 'picker' %}<span class="muted">Restricted</span>{% else %}{{ report_currency }} {{ '%.2f'|format(product.sell_price) }}<small>Cost {{ report_currency }} {{ '%.2f'|format(product.cost_price) }}</small>{% endif %}</td>
           <td><span class="{{ 'covered-tag' if product.is_active else 'action-tag' }}">{{ 'Active' if product.is_active else 'Archived' }}</span><small>Reorder at {{ product.reorder_point }}</small></td>
           <td>
             <div class="stock-pills">
