@@ -23,6 +23,7 @@ from app.services.identity import ensure_default_identity
 from app.services.auth import AuthenticationError, UserService, UserValidationError
 from app.services.emailer import ReportMailer
 from app.services.forecast import ForecastService
+from app.services.intelligence import ForecastAccuracyService
 from app.schema import current_schema_versions, migrate_schema
 
 
@@ -68,21 +69,25 @@ def seed_demo(reset: bool) -> None:
     kitchen_bin = Bin(location=kitchen, code="K-01", capacity=200)
     products = [
         Product(
+            workspace_id=actor.workspace_id,
             sku="COFFEE-250", name="Cold Coffee 250 ml", category="Beverages", unit="bottles",
             cost_price=Decimal("55.00"), sell_price=Decimal("85.00"),
             reorder_point=25, safety_stock=18, preferred_supplier=fresh_supplier,
         ),
         Product(
+            workspace_id=actor.workspace_id,
             sku="RICE-5KG", name="Basmati Rice 5 kg", category="Grocery", unit="bags",
             cost_price=Decimal("430.00"), sell_price=Decimal("520.00"),
             reorder_point=18, safety_stock=12, preferred_supplier=dry_supplier,
         ),
         Product(
+            workspace_id=actor.workspace_id,
             sku="OIL-1L", name="Sunflower Oil 1 L", category="Grocery", unit="bottles",
             cost_price=Decimal("118.00"), sell_price=Decimal("145.00"),
             reorder_point=24, safety_stock=15, preferred_supplier=dry_supplier,
         ),
         Product(
+            workspace_id=actor.workspace_id,
             sku="WRAP-BOX", name="Food Wrap Box", category="Packaging", unit="boxes",
             cost_price=Decimal("38.00"), sell_price=Decimal("65.00"),
             reorder_point=10, safety_stock=8, preferred_supplier=dry_supplier,
@@ -116,6 +121,7 @@ def seed_demo(reset: bool) -> None:
         occurred_at = start + timedelta(days=day_offset, hours=12)
         weekend_multiplier = 1.45 if occurred_at.weekday() in {4, 5, 6} else 1.0
         sale = Sale(
+            workspace_id=actor.workspace_id,
             external_id=f"demo-main-{day_offset}",
             source="demo_pos",
             location=main_store,
@@ -171,11 +177,12 @@ def schema_version_command() -> None:
 @with_appcontext
 def analyze_inventory(send_email: bool, critical_only: bool) -> None:
     """Calculate demand forecasts and optionally send the daily action report."""
-    results = ForecastService.run()
+    workspace_id = ensure_default_identity().workspace_id
+    ForecastAccuracyService.evaluate(workspace_id=workspace_id)
+    results = ForecastService.run(workspace_id=workspace_id)
     at_risk = sum(item.recommended_reorder_quantity > 0 for item in results)
     click.echo(f"Analyzed {len(results)} stock positions; {at_risk} need replenishment.")
     if send_email:
-        workspace_id = ensure_default_identity().workspace_id
         report = (
             ReportMailer.send_critical_alerts(results, workspace_id=workspace_id)
             if critical_only

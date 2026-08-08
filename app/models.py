@@ -25,6 +25,7 @@ class Workspace(db.Model):
     users = db.relationship("User", back_populates="workspace")
     locations = db.relationship("InventoryLocation", back_populates="workspace")
     suppliers = db.relationship("Supplier", back_populates="workspace")
+    products = db.relationship("Product", back_populates="workspace")
     alert_deliveries = db.relationship("AlertDelivery", back_populates="workspace")
 
 
@@ -126,11 +127,16 @@ class AlertDelivery(db.Model):
 
 class InventoryLocation(db.Model):
     __tablename__ = "inventory_locations"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "code", name="uq_location_workspace_code"
+        ),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
-    workspace_id = db.Column(db.Integer, db.ForeignKey("workspaces.id"), nullable=True)
+    workspace_id = db.Column(db.Integer, db.ForeignKey("workspaces.id"), nullable=False)
     name = db.Column(db.String(120), nullable=False)
-    code = db.Column(db.String(32), nullable=False, unique=True, index=True)
+    code = db.Column(db.String(32), nullable=False, index=True)
     address = db.Column(db.String(255))
     is_active = db.Column(db.Boolean, nullable=False, default=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
@@ -174,6 +180,10 @@ class Product(db.Model):
     __tablename__ = "products"
 
     __table_args__ = (
+        db.UniqueConstraint("workspace_id", "sku", name="uq_product_workspace_sku"),
+        db.UniqueConstraint(
+            "workspace_id", "barcode", name="uq_product_workspace_barcode"
+        ),
         db.CheckConstraint("cost_price >= 0", name="ck_product_cost_non_negative"),
         db.CheckConstraint("sell_price >= 0", name="ck_product_sell_non_negative"),
         db.CheckConstraint("reorder_point >= 0", name="ck_product_reorder_non_negative"),
@@ -181,8 +191,11 @@ class Product(db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    sku = db.Column(db.String(100), nullable=False, unique=True, index=True)
-    barcode = db.Column(db.String(100), unique=True, index=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    sku = db.Column(db.String(100), nullable=False, index=True)
+    barcode = db.Column(db.String(100), index=True)
     name = db.Column(db.String(255), nullable=False)
     category = db.Column(db.String(100), nullable=False, default="General")
     unit_of_measure = db.Column(db.String(20), nullable=False, default="unit")
@@ -205,9 +218,14 @@ class Product(db.Model):
     active = synonym("is_active")
 
     preferred_supplier = db.relationship("Supplier", back_populates="products")
+    workspace = db.relationship("Workspace", back_populates="products")
     stock_levels = db.relationship(
         "StockLevel", back_populates="product", cascade="all, delete-orphan"
     )
+    unit_conversions = db.relationship(
+        "UnitConversion", back_populates="product", cascade="all, delete-orphan"
+    )
+    inventory_lots = db.relationship("InventoryLot", back_populates="product")
 
 
 class StockLevel(db.Model):
@@ -269,11 +287,87 @@ class StockLevel(db.Model):
     )
 
 
-class Sale(db.Model):
-    __tablename__ = "sales"
+class UnitConversion(db.Model):
+    """Product-specific packaging unit expressed in the product's base unit."""
+
+    __tablename__ = "unit_conversions"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "product_id", "unit_code",
+            name="uq_conversion_workspace_product_unit",
+        ),
+        db.CheckConstraint("to_base_factor > 0", name="ck_conversion_factor_positive"),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
-    external_id = db.Column(db.String(128), nullable=False, unique=True, index=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False)
+    unit_code = db.Column(db.String(20), nullable=False)
+    to_base_factor = db.Column(db.Numeric(18, 6), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+
+    product = db.relationship("Product", back_populates="unit_conversions")
+
+
+class InventoryLot(db.Model):
+    """Expiry-aware lot subledger reconciled with aggregate stock positions."""
+
+    __tablename__ = "inventory_lots"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "product_id", "location_id", "position_bin_key", "lot_number",
+            name="uq_lot_workspace_position_number",
+        ),
+        db.CheckConstraint("quantity_on_hand >= 0", name="ck_lot_quantity_non_negative"),
+        db.CheckConstraint(
+            "expiry_date IS NULL OR manufactured_at IS NULL OR expiry_date >= manufactured_at",
+            name="ck_lot_expiry_after_manufacture",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False)
+    location_id = db.Column(
+        db.Integer, db.ForeignKey("inventory_locations.id"), nullable=False
+    )
+    bin_id = db.Column(db.Integer, db.ForeignKey("bins.id"))
+    position_bin_key = db.Column(
+        db.Integer, Computed("COALESCE(bin_id, 0)", persisted=False)
+    )
+    lot_number = db.Column(db.String(100), nullable=False)
+    manufactured_at = db.Column(db.Date)
+    expiry_date = db.Column(db.Date, index=True)
+    quantity_on_hand = db.Column(
+        db.Numeric(12, 2), nullable=False, default=Decimal("0.00")
+    )
+    received_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    product = db.relationship("Product", back_populates="inventory_lots")
+    location = db.relationship("InventoryLocation")
+    bin = db.relationship("Bin")
+
+
+class Sale(db.Model):
+    __tablename__ = "sales"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "external_id", name="uq_sale_workspace_external_id"
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    external_id = db.Column(db.String(128), nullable=False, index=True)
     source = db.Column(db.String(64), nullable=False, default="pos")
     location_id = db.Column(
         db.Integer, db.ForeignKey("inventory_locations.id"), nullable=False
@@ -327,14 +421,20 @@ class InventoryMovement(db.Model):
 class StockTransfer(db.Model):
     __tablename__ = "stock_transfers"
     __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "external_id", name="uq_transfer_workspace_external_id"
+        ),
         db.CheckConstraint("quantity > 0", name="ck_transfer_quantity_positive"),
     )
 
     id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
     transfer_uid = db.Column(
         db.String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid4())
     )
-    external_id = db.Column(db.String(128), unique=True, index=True)
+    external_id = db.Column(db.String(128), index=True)
     product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False)
     source_location_id = db.Column(
         db.Integer, db.ForeignKey("inventory_locations.id"), nullable=False
@@ -367,6 +467,9 @@ class SalesOrder(db.Model):
 
     __tablename__ = "sales_orders"
     __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "external_id", name="uq_sales_order_workspace_external_id"
+        ),
         db.CheckConstraint(
             "status IN ('pending', 'picking', 'packed', 'shipped', 'cancelled')",
             name="ck_sales_order_status",
@@ -377,7 +480,7 @@ class SalesOrder(db.Model):
     order_uid = db.Column(
         db.String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid4())
     )
-    external_id = db.Column(db.String(128), unique=True, index=True)
+    external_id = db.Column(db.String(128), index=True)
     workspace_id = db.Column(db.Integer, db.ForeignKey("workspaces.id"), nullable=False)
     location_id = db.Column(
         db.Integer, db.ForeignKey("inventory_locations.id"), nullable=False, index=True
@@ -486,6 +589,152 @@ class SalesOrderAllocation(db.Model):
 
     order_item = db.relationship("SalesOrderItem", back_populates="allocations")
     stock_level = db.relationship("StockLevel", back_populates="order_allocations")
+
+
+class PurchaseOrder(db.Model):
+    """Inbound supplier order with explicit draft, approval and receipt states."""
+
+    __tablename__ = "purchase_orders"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "external_id", name="uq_purchase_order_workspace_external_id"
+        ),
+        db.CheckConstraint(
+            "status IN ('draft', 'pending_approval', 'approved', "
+            "'partially_received', 'received', 'cancelled')",
+            name="ck_purchase_order_status",
+        ),
+        db.CheckConstraint(
+            "source IN ('manual', 'ai')", name="ck_purchase_order_source"
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    po_uid = db.Column(
+        db.String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid4())
+    )
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    external_id = db.Column(db.String(128), index=True)
+    supplier_id = db.Column(db.Integer, db.ForeignKey("suppliers.id"), nullable=False)
+    location_id = db.Column(
+        db.Integer, db.ForeignKey("inventory_locations.id"), nullable=False
+    )
+    status = db.Column(db.String(30), nullable=False, default="draft", index=True)
+    source = db.Column(db.String(20), nullable=False, default="manual")
+    expected_at = db.Column(db.Date)
+    note = db.Column(db.String(500))
+    ai_rationale = db.Column(db.Text)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    approved_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    approved_at = db.Column(db.DateTime(timezone=True))
+    cancelled_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    cancelled_at = db.Column(db.DateTime(timezone=True))
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    workspace = db.relationship("Workspace")
+    supplier = db.relationship("Supplier")
+    location = db.relationship("InventoryLocation")
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+    approved_by = db.relationship("User", foreign_keys=[approved_by_id])
+    cancelled_by = db.relationship("User", foreign_keys=[cancelled_by_id])
+    items = db.relationship(
+        "PurchaseOrderItem", back_populates="purchase_order",
+        cascade="all, delete-orphan", order_by="PurchaseOrderItem.id"
+    )
+    receipts = db.relationship(
+        "PurchaseReceipt", back_populates="purchase_order",
+        cascade="all, delete-orphan", order_by="PurchaseReceipt.received_at"
+    )
+
+
+class PurchaseOrderItem(db.Model):
+    __tablename__ = "purchase_order_items"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "purchase_order_id", "product_id", name="uq_purchase_order_product"
+        ),
+        db.CheckConstraint(
+            "ordered_quantity > 0 AND received_quantity >= 0 "
+            "AND received_quantity <= ordered_quantity",
+            name="ck_purchase_item_quantities",
+        ),
+        db.CheckConstraint(
+            "conversion_to_base > 0", name="ck_purchase_item_conversion_positive"
+        ),
+        db.CheckConstraint("unit_cost >= 0", name="ck_purchase_item_cost_non_negative"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    purchase_order_id = db.Column(
+        db.Integer, db.ForeignKey("purchase_orders.id"), nullable=False, index=True
+    )
+    product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False)
+    ordered_quantity = db.Column(db.Numeric(12, 2), nullable=False)
+    received_quantity = db.Column(
+        db.Numeric(12, 2), nullable=False, default=Decimal("0.00")
+    )
+    order_unit = db.Column(db.String(20), nullable=False)
+    conversion_to_base = db.Column(db.Numeric(18, 6), nullable=False)
+    unit_cost = db.Column(db.Numeric(10, 2), nullable=False, default=Decimal("0.00"))
+
+    purchase_order = db.relationship("PurchaseOrder", back_populates="items")
+    product = db.relationship("Product")
+    receipt_items = db.relationship("PurchaseReceiptItem", back_populates="purchase_order_item")
+
+
+class PurchaseReceipt(db.Model):
+    __tablename__ = "purchase_receipts"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "purchase_order_id", "external_id", name="uq_purchase_receipt_external_id"
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    receipt_uid = db.Column(
+        db.String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid4())
+    )
+    purchase_order_id = db.Column(
+        db.Integer, db.ForeignKey("purchase_orders.id"), nullable=False, index=True
+    )
+    external_id = db.Column(db.String(128), nullable=False)
+    received_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    note = db.Column(db.String(255))
+    received_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+
+    purchase_order = db.relationship("PurchaseOrder", back_populates="receipts")
+    received_by = db.relationship("User")
+    items = db.relationship(
+        "PurchaseReceiptItem", back_populates="receipt", cascade="all, delete-orphan"
+    )
+
+
+class PurchaseReceiptItem(db.Model):
+    __tablename__ = "purchase_receipt_items"
+    __table_args__ = (
+        db.CheckConstraint("quantity_received > 0", name="ck_receipt_item_quantity_positive"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    receipt_id = db.Column(
+        db.Integer, db.ForeignKey("purchase_receipts.id"), nullable=False, index=True
+    )
+    purchase_order_item_id = db.Column(
+        db.Integer, db.ForeignKey("purchase_order_items.id"), nullable=False
+    )
+    inventory_lot_id = db.Column(db.Integer, db.ForeignKey("inventory_lots.id"))
+    quantity_received = db.Column(db.Numeric(12, 2), nullable=False)
+    received_unit = db.Column(db.String(20), nullable=False)
+    conversion_to_base = db.Column(db.Numeric(18, 6), nullable=False)
+
+    receipt = db.relationship("PurchaseReceipt", back_populates="items")
+    purchase_order_item = db.relationship("PurchaseOrderItem", back_populates="receipt_items")
+    inventory_lot = db.relationship("InventoryLot")
 
 
 class ReturnAuthorization(db.Model):
@@ -693,3 +942,69 @@ class DemandInsight(db.Model):
 
     product = db.relationship("Product")
     location = db.relationship("InventoryLocation")
+
+
+class ForecastOutcome(db.Model):
+    """Actual demand observed after a persisted forecast horizon."""
+
+    __tablename__ = "forecast_outcomes"
+    __table_args__ = (
+        db.UniqueConstraint("insight_id", name="uq_forecast_outcome_insight"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    insight_id = db.Column(
+        db.Integer, db.ForeignKey("demand_insights.id"), nullable=False
+    )
+    horizon_days = db.Column(db.Integer, nullable=False, default=7)
+    predicted_units = db.Column(db.Numeric(12, 2), nullable=False)
+    actual_units = db.Column(db.Numeric(12, 2), nullable=False)
+    absolute_error = db.Column(db.Numeric(12, 2), nullable=False)
+    absolute_percentage_error = db.Column(db.Float)
+    evaluated_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+
+    insight = db.relationship("DemandInsight")
+
+
+class ChatConversation(db.Model):
+    __tablename__ = "chat_conversations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_uid = db.Column(
+        db.String(36), nullable=False, unique=True, index=True, default=lambda: str(uuid4())
+    )
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    user = db.relationship("User")
+    messages = db.relationship(
+        "ChatMessage", back_populates="conversation", cascade="all, delete-orphan",
+        order_by="ChatMessage.created_at, ChatMessage.id"
+    )
+
+
+class ChatMessage(db.Model):
+    __tablename__ = "chat_messages"
+    __table_args__ = (
+        db.CheckConstraint("role IN ('user', 'assistant')", name="ck_chat_message_role"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(
+        db.Integer, db.ForeignKey("chat_conversations.id"), nullable=False, index=True
+    )
+    role = db.Column(db.String(20), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    context_snapshot = db.Column(db.JSON)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+
+    conversation = db.relationship("ChatConversation", back_populates="messages")

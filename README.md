@@ -3,8 +3,9 @@
 A portfolio-ready inventory system for retailers and restaurants. It consumes sale events in near real time, updates stock safely, forecasts demand from historical sales, maintains supplier, fulfilment, and returns operations, exports risk/valuation reports, and emails owner-ready reorder actions.
 
 StockPilot deliberately supports one business workspace per deployment. The
-workspace row remains the ownership and audit boundary, but a database with
-multiple workspace rows fails closed instead of exposing partially scoped data.
+workspace row remains the ownership and audit boundary, catalogue and operational
+identifiers are workspace-scoped, and a configured single-workspace deployment
+fails closed if unexpected tenant rows are introduced.
 
 The application is deliberately split into two kinds of intelligence:
 
@@ -49,9 +50,15 @@ flowchart TD
 | Camera barcode scanner | Locally bundled `html5-qrcode` scanner with rear-camera, manual/USB-reader, SKU fallback, and live bin-level stock lookup |
 | Mobile picker | Touch-first `/picker` queue with exact bin positions, large action targets, connection awareness, and an installable read-only offline shell |
 | Returns / RMA | Shipped-order return requests, approval/rejection, partial receiving, restock/damaged disposition, over-return protection, and append-only RMA events |
+| Purchase orders | Manual and AI-assisted supplier drafts, approval, ordered-versus-received matching, partial/idempotent receipts, and inbound movement audit |
+| Unit conversions | Product-specific packaging conversions normalize supplier units such as boxes or cases into authoritative base-unit stock |
+| Lot and expiry control | Perishable receipt validation, manufacture/expiry dates, FEFO lot consumption, and lot-preserving transfers |
+| Inventory ageing | Configurable near-expiry and dead-stock recommendations in the UI and API |
 | Demand forecasting | Weighted recent + historical demand, weekday adjustment, lead-time coverage, safety stock, confidence score, and persisted calculation factors |
+| Forecast accuracy | Seven-day predicted-versus-actual outcomes with MAE, MAPE, and prediction-bias summaries |
 | Forecast explainability | Dashboard panels and API JSON expose the exact sales window, averages, weights, weekday multiplier, lead time, available stock, and target stock used by each run |
 | GenAI explanation | Optional Bedrock `Converse` call using an EC2 IAM role |
+| Dashboard assistant | Workspace-grounded questions about demand changes, stock risks, expiry, dead stock, and forecast accuracy, with deterministic fallback answers |
 | Exportable reporting | Workspace-scoped inventory risk and current-unit-cost valuation reports in JSON, Excel, and PDF |
 | Automated owner alerts | Optional SES v2 text + HTML delivery for daily actions or critical-only risks, with a durable delivery audit |
 | Scheduled analysis | CloudFormation template: EventBridge Scheduler → Lambda → SSM → EC2 command |
@@ -93,7 +100,7 @@ Role boundaries:
 | Role | Allowed browser operations |
 | --- | --- |
 | Admin | All inventory, outbound, returns, and user-management operations |
-| Manager | Product, supplier, location/bin, stock-adjustment, transfer, reports, alerts, order shipment, and RMA request/review/receiving workflows |
+| Manager | Product, supplier, purchase-order approval/receiving, unit conversions, location/bin, stock-adjustment, transfer, reports, alerts, order shipment, and RMA request/review/receiving workflows |
 | Picker | Dashboard/product/location views, barcode scanning, transfers, mobile pick/pack execution, and authorized return receiving; no catalogue, user, arbitrary adjustment, order creation, shipment, or RMA approval controls |
 
 The scanner bundles `html5-qrcode` 2.3.8 locally so the private application has no runtime CDN dependency. Its Apache-2.0 license is included at `app/static/vendor/html5-qrcode.LICENSE.txt`.
@@ -255,9 +262,9 @@ curl -X POST http://127.0.0.1:5000/api/products/import \
   -F 'file=@examples/products-import.csv'
 ```
 
-### Sprint 1–7 database migrations
+### Sprint 1–8 database migrations
 
-`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprint 1 renames the legacy `quantity` field to `quantity_on_hand`, adds `quantity_reserved`, and backfills product fields. Sprint 2 adds workspaces/users for durable audit identity, location state, bins, bin-aware stock positions, transfer records, and user/bin fields on movements. It also replaces the legacy product/location uniqueness rule without deleting existing balances. Sprint 3 activates the durable user records as named accounts, normalizes legacy roles, and preserves every existing movement/user foreign key. Sprint 4 adds sales orders, order items, and exact stock-level allocations for the reserved-to-shipped outbound lifecycle. Sprint 5 migrates legacy supplier email/phone fields into workspace-scoped supplier records, preserves existing supplier/product links, and adds alert-delivery audit records. Sprint 6 backfills stored forecast factors and adds RMA headers, lines, partial receipts, dispositions, actors, and append-only workflow events. Sprint 7 formalizes the single-workspace invariant, adds collision-safe stock-position uniqueness, and indexes latest forecast lookups.
+`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprint 1 renames the legacy `quantity` field to `quantity_on_hand`, adds `quantity_reserved`, and backfills product fields. Sprint 2 adds workspaces/users for durable audit identity, location state, bins, bin-aware stock positions, transfer records, and user/bin fields on movements. It also replaces the legacy product/location uniqueness rule without deleting existing balances. Sprint 3 activates the durable user records as named accounts, normalizes legacy roles, and preserves every existing movement/user foreign key. Sprint 4 adds sales orders, order items, and exact stock-level allocations for the reserved-to-shipped outbound lifecycle. Sprint 5 migrates legacy supplier email/phone fields into workspace-scoped supplier records, preserves existing supplier/product links, and adds alert-delivery audit records. Sprint 6 backfills stored forecast factors and adds RMA headers, lines, partial receipts, dispositions, actors, and append-only workflow events. Sprint 7 formalizes the single-workspace invariant, adds collision-safe stock-position uniqueness, and indexes latest forecast lookups. Sprint 8 scopes catalogue and integration identifiers by workspace and adds conversions, purchase orders/receipts, expiry-aware lots, forecast outcomes, and assistant history.
 
 Recorded revisions:
 
@@ -268,6 +275,7 @@ Recorded revisions:
 - `20260806_sprint5_suppliers_reporting_alerts`
 - `20260806_sprint6_picker_explainability_returns`
 - `20260808_single_workspace_hardening`
+- `20260808_procurement_lots_intelligence`
 
 Run `flask --app run schema-version` to inspect the applied revisions.
 
@@ -292,6 +300,9 @@ SESSION_COOKIE_SECURE=true
 TRUST_PROXY_HEADERS=true
 TRUSTED_HOSTS=inventory.example.com
 CRITICAL_STOCKOUT_DAYS=3
+NEAR_EXPIRY_DAYS=30
+DEAD_STOCK_DAYS=90
+FORECAST_ACCURACY_HORIZON_DAYS=7
 REPORT_CURRENCY=INR
 AWS_REGION=ap-south-1
 BEDROCK_ENABLED=true
@@ -379,11 +390,11 @@ Every new forecast persists the exact factor JSON used by the calculation: model
 
 ```text
 app/                 Flask routes, models, dashboard, and business services
-app/services/        Product, supplier, reporting, location/bin, transfer, outbound, returns/RMA, identity, POS, forecast, Bedrock, and SES services
+app/services/        Product, procurement, lot/conversion, intelligence, reporting, transfer, fulfilment, returns, forecast, Bedrock, and SES services
 app/schema.py        Versioned SQLite/MySQL schema migrations
 examples/            Sample product CSV import file
 infra/               EC2 IAM policy and Scheduler → Lambda → SSM template
 scripts/             EC2 bootstrap and scheduled-job wrapper
 deploy/              Gunicorn systemd unit and Nginx reverse-proxy config
-tests/               56 regression tests across Sprints 1–7, including migrations, CRUD, auth, barcode, transfers, fulfilment, reports, explainability, mobile picker, RMAs, idempotency conflicts, production configuration, and stock-position uniqueness
+tests/               60 regression tests across Sprints 1–8, including migrations, CRUD, auth, procurement, partial receipts, conversions, lots/expiry, forecast accuracy, grounded chat, workspace scoping, transfers, fulfilment, reports, mobile picker, and RMAs
 ```

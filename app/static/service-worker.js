@@ -1,9 +1,11 @@
-const CACHE_NAME = "stockpilot-picker-v2";
+const CACHE_NAME = "stockpilot-picker-v3";
 const OFFLINE_URL = "/static/offline.html";
 const APP_SHELL = [
   OFFLINE_URL,
   "/static/app.css",
   "/static/app-shell.js",
+  "/static/dashboard-chat.js",
+  "/static/procurement.js",
   "/static/picker.js",
   "/static/manifest.webmanifest",
   "/static/stockpilot-icon.svg",

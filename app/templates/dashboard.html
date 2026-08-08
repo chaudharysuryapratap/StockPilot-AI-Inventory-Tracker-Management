@@ -172,4 +172,20 @@
     <div class="empty-state"><span>✦</span><h3>No forecast factors yet</h3><p>Run inventory analysis to create an explainable forecast.</p></div>
   {% endif %}
 </section>
+
+<section class="panel assistant-panel" id="inventory-assistant" data-chat-url="{{ url_for('api.dashboard_chat_api') }}" data-csrf-token="{{ csrf_token() }}">
+  <div class="panel-header">
+    <div><p class="eyebrow">DASHBOARD ASSISTANT</p><h2>Ask about demand, stock risk, expiry, or forecast accuracy</h2></div>
+    <span class="muted">Answers are grounded in the current workspace snapshot</span>
+  </div>
+  <div id="assistant-messages" class="assistant-messages" aria-live="polite">
+    <p class="assistant-answer">Try “What demand changed?”, “What is near expiry?”, or “Which stock is most at risk?”</p>
+  </div>
+  <form id="assistant-form" class="assistant-form">
+    <label class="sr-only" for="assistant-question">Inventory question</label>
+    <input id="assistant-question" maxlength="1000" placeholder="Ask StockPilot about this dashboard…" required>
+    <button class="button" type="submit">Ask</button>
+  </form>
+</section>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='dashboard-chat.js') }}" defer></script>{% endblock %}

@@ -15,6 +15,7 @@ SPRINT_4_SCHEMA_VERSION = "20260806_sprint4_outbound_fulfillment"
 SPRINT_5_SCHEMA_VERSION = "20260806_sprint5_suppliers_reporting_alerts"
 SPRINT_6_SCHEMA_VERSION = "20260806_sprint6_picker_explainability_returns"
 SPRINT_7_SCHEMA_VERSION = "20260808_single_workspace_hardening"
+SPRINT_8_SCHEMA_VERSION = "20260808_procurement_lots_intelligence"
 SCHEMA_VERSIONS = (
     SPRINT_1_SCHEMA_VERSION,
     SPRINT_2_SCHEMA_VERSION,
@@ -23,6 +24,7 @@ SCHEMA_VERSIONS = (
     SPRINT_5_SCHEMA_VERSION,
     SPRINT_6_SCHEMA_VERSION,
     SPRINT_7_SCHEMA_VERSION,
+    SPRINT_8_SCHEMA_VERSION,
 )
 
 
@@ -657,6 +659,124 @@ def _upgrade_sprint7(connection) -> None:
         )
 
 
+def _upgrade_sprint8(connection) -> None:
+    """Add workspace-owned catalogue records and procurement intelligence."""
+    from app.models import (
+        ChatConversation,
+        ChatMessage,
+        ForecastOutcome,
+        InventoryLot,
+        PurchaseOrder,
+        PurchaseOrderItem,
+        PurchaseReceipt,
+        PurchaseReceiptItem,
+        UnitConversion,
+    )
+
+    workspace_id, _ = _seed_workspace_and_actor(connection)
+    _add_column(connection, "products", "workspace_id", "INTEGER NULL")
+    connection.execute(
+        sa.text("UPDATE products SET workspace_id = :workspace_id WHERE workspace_id IS NULL"),
+        {"workspace_id": workspace_id},
+    )
+    _add_column(connection, "sales", "workspace_id", "INTEGER NULL")
+    connection.execute(
+        sa.text(
+            "UPDATE sales SET workspace_id = ("
+            "SELECT workspace_id FROM inventory_locations "
+            "WHERE inventory_locations.id = sales.location_id) "
+            "WHERE workspace_id IS NULL"
+        )
+    )
+    _add_column(connection, "stock_transfers", "workspace_id", "INTEGER NULL")
+    connection.execute(
+        sa.text(
+            "UPDATE stock_transfers SET workspace_id = ("
+            "SELECT workspace_id FROM inventory_locations "
+            "WHERE inventory_locations.id = stock_transfers.source_location_id) "
+            "WHERE workspace_id IS NULL"
+        )
+    )
+
+    if connection.dialect.name in {"mysql", "mariadb"}:
+        connection.execute(
+            sa.text("ALTER TABLE products MODIFY COLUMN workspace_id INTEGER NOT NULL")
+        )
+        connection.execute(
+            sa.text("ALTER TABLE inventory_locations MODIFY COLUMN workspace_id INTEGER NOT NULL")
+        )
+        connection.execute(
+            sa.text("ALTER TABLE sales MODIFY COLUMN workspace_id INTEGER NOT NULL")
+        )
+        connection.execute(
+            sa.text("ALTER TABLE stock_transfers MODIFY COLUMN workspace_id INTEGER NOT NULL")
+        )
+        for table_name in ("products", "sales", "stock_transfers"):
+            if ("workspace_id",) not in _foreign_key_columns(connection, table_name):
+                connection.execute(
+                    sa.text(
+                        f"ALTER TABLE {_safe_identifier(table_name)} ADD CONSTRAINT "
+                        f"{_safe_identifier(f'fk_{table_name}_workspace')} "
+                        "FOREIGN KEY (workspace_id) REFERENCES workspaces(id)"
+                    )
+                )
+
+    scoped_indexes = (
+        ("products", "uq_product_workspace_sku", "workspace_id, sku"),
+        ("products", "uq_product_workspace_barcode", "workspace_id, barcode"),
+        ("inventory_locations", "uq_location_workspace_code", "workspace_id, code"),
+        ("sales", "uq_sale_workspace_external_id", "workspace_id, external_id"),
+        ("stock_transfers", "uq_transfer_workspace_external_id", "workspace_id, external_id"),
+        ("sales_orders", "uq_sales_order_workspace_external_id", "workspace_id, external_id"),
+    )
+    for table_name, index_name, columns in scoped_indexes:
+        if index_name not in _indexes(connection, table_name):
+            connection.execute(
+                sa.text(f"CREATE UNIQUE INDEX {index_name} ON {table_name} ({columns})")
+            )
+
+    # MySQL exposes legacy column-level UNIQUE declarations as removable
+    # indexes. Drop them only after the workspace composites exist. SQLite's
+    # anonymous auto-indexes cannot be removed without rebuilding live tables;
+    # single-workspace upgraded SQLite databases remain safely more restrictive,
+    # while fresh databases and production RDS receive the fully scoped keys.
+    if connection.dialect.name in {"mysql", "mariadb"}:
+        legacy_unique_columns = {
+            "products": {"sku", "barcode"},
+            "inventory_locations": {"code"},
+            "sales": {"external_id"},
+            "stock_transfers": {"external_id"},
+            "sales_orders": {"external_id"},
+        }
+        inspector = sa.inspect(connection)
+        for table_name, column_names in legacy_unique_columns.items():
+            candidates = [
+                item for item in (
+                    inspector.get_unique_constraints(table_name)
+                    + inspector.get_indexes(table_name)
+                )
+                if item.get("name")
+                and set(item.get("column_names") or ()) in ({name} for name in column_names)
+            ]
+            for item in {entry["name"]: entry for entry in candidates}.values():
+                connection.execute(
+                    sa.text(
+                        f"ALTER TABLE {_safe_identifier(table_name)} "
+                        f"DROP INDEX {_safe_identifier(item['name'])}"
+                    )
+                )
+
+    UnitConversion.__table__.create(bind=connection, checkfirst=True)
+    InventoryLot.__table__.create(bind=connection, checkfirst=True)
+    PurchaseOrder.__table__.create(bind=connection, checkfirst=True)
+    PurchaseOrderItem.__table__.create(bind=connection, checkfirst=True)
+    PurchaseReceipt.__table__.create(bind=connection, checkfirst=True)
+    PurchaseReceiptItem.__table__.create(bind=connection, checkfirst=True)
+    ForecastOutcome.__table__.create(bind=connection, checkfirst=True)
+    ChatConversation.__table__.create(bind=connection, checkfirst=True)
+    ChatMessage.__table__.create(bind=connection, checkfirst=True)
+
+
 def migrate_schema() -> MigrationResult:
     """Apply all pending StockPilot migrations to SQLite or RDS MySQL."""
     applied_versions: list[str] = []
@@ -746,8 +866,16 @@ def migrate_schema() -> MigrationResult:
             )
             applied_versions.append(SPRINT_7_SCHEMA_VERSION)
 
+        if SPRINT_8_SCHEMA_VERSION not in existing:
+            _upgrade_sprint8(connection)
+            connection.execute(
+                sa.text("INSERT INTO schema_migrations (version) VALUES (:version)"),
+                {"version": SPRINT_8_SCHEMA_VERSION},
+            )
+            applied_versions.append(SPRINT_8_SCHEMA_VERSION)
+
     return MigrationResult(
-        version=applied_versions[-1] if applied_versions else SPRINT_7_SCHEMA_VERSION,
+        version=applied_versions[-1] if applied_versions else SPRINT_8_SCHEMA_VERSION,
         applied=bool(applied_versions),
         applied_versions=tuple(applied_versions),
     )

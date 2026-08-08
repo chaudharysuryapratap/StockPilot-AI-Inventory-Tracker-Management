@@ -26,6 +26,7 @@ from app.schema import (
     SPRINT_5_SCHEMA_VERSION,
     SPRINT_6_SCHEMA_VERSION,
     SPRINT_7_SCHEMA_VERSION,
+    SPRINT_8_SCHEMA_VERSION,
     current_schema_versions,
     migrate_schema,
 )
@@ -187,8 +188,9 @@ def test_sprint6_migration_backfills_legacy_forecast_factors(tmp_path):
         assert result.applied_versions == (
             SPRINT_6_SCHEMA_VERSION,
             SPRINT_7_SCHEMA_VERSION,
+            SPRINT_8_SCHEMA_VERSION,
         )
-        assert result.version == SPRINT_7_SCHEMA_VERSION
+        assert result.version == SPRINT_8_SCHEMA_VERSION
         assert "factors" in columns
         assert factors == "{}"
         assert {
@@ -197,7 +199,7 @@ def test_sprint6_migration_backfills_legacy_forecast_factors(tmp_path):
             "return_receipts",
             "return_events",
         }.issubset(tables)
-        assert current_schema_versions()[-1] == SPRINT_7_SCHEMA_VERSION
+        assert current_schema_versions()[-1] == SPRINT_8_SCHEMA_VERSION
         db.session.remove()
 
 

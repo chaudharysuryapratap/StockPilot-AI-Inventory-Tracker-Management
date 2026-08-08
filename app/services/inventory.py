@@ -170,7 +170,7 @@ class InventoryService:
         )
 
         location = InventoryLocation.query.filter_by(
-            code=location_code, is_active=True
+            workspace_id=actor.workspace_id, code=location_code, is_active=True
         ).first()
         if not location:
             raise UnknownInventoryReferenceError(
@@ -199,7 +199,9 @@ class InventoryService:
                 )
             current["quantity"] += quantity
 
-        existing = Sale.query.filter_by(external_id=external_id).first()
+        existing = Sale.query.filter_by(
+            workspace_id=actor.workspace_id, external_id=external_id
+        ).first()
         if existing:
             if not _matching_sale(
                 existing,
@@ -214,6 +216,7 @@ class InventoryService:
             return existing, False
 
         sale = Sale(
+            workspace_id=actor.workspace_id,
             external_id=external_id,
             source=source,
             location=location,
@@ -225,7 +228,9 @@ class InventoryService:
             db.session.flush()
 
             for sku, requested_item in requested.items():
-                product = Product.query.filter_by(sku=sku, active=True).first()
+                product = Product.query.filter_by(
+                    workspace_id=actor.workspace_id, sku=sku, active=True
+                ).first()
                 if not product:
                     raise UnknownInventoryReferenceError(
                         f"No active product exists for SKU '{sku}'"
@@ -269,6 +274,15 @@ class InventoryService:
                         continue
                     stock.quantity_on_hand -= allocated
                     stock.updated_at = utcnow()
+                    from app.services.procurement import consume_tracked_lots
+
+                    consume_tracked_lots(
+                        workspace_id=actor.workspace_id,
+                        product_id=product.id,
+                        location_id=location.id,
+                        bin_id=stock.bin_id,
+                        quantity=allocated,
+                    )
                     db.session.add(
                         InventoryMovement(
                             product=product,
@@ -292,7 +306,9 @@ class InventoryService:
             db.session.rollback()
             # The only expected race here is an idempotent duplicate arriving at
             # the same time. If it is something else, surface the original issue.
-            duplicate = Sale.query.filter_by(external_id=external_id).first()
+            duplicate = Sale.query.filter_by(
+                workspace_id=actor.workspace_id, external_id=external_id
+            ).first()
             if duplicate:
                 if _matching_sale(
                     duplicate,
@@ -320,9 +336,11 @@ class InventoryService:
             raise ValueError("sku and location_code are required")
         delta = _quantity(payload.get("quantity_delta"), "quantity_delta")
 
-        product = Product.query.filter_by(sku=sku).first()
+        product = Product.query.filter_by(
+            workspace_id=actor.workspace_id, sku=sku
+        ).first()
         location = InventoryLocation.query.filter_by(
-            code=location_code, is_active=True
+            workspace_id=actor.workspace_id, code=location_code, is_active=True
         ).first()
         if not product or not location:
             raise UnknownInventoryReferenceError("product or location was not found")
@@ -382,6 +400,16 @@ class InventoryService:
             )
 
         try:
+            if delta < 0:
+                from app.services.procurement import consume_tracked_lots
+
+                consume_tracked_lots(
+                    workspace_id=actor.workspace_id,
+                    product_id=product.id,
+                    location_id=location.id,
+                    bin_id=bin_record.id if bin_record else None,
+                    quantity=-delta,
+                )
             stock.quantity_on_hand += delta
             stock.updated_at = utcnow()
             db.session.add(

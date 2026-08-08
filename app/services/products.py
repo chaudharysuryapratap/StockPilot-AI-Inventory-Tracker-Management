@@ -218,6 +218,8 @@ class ProductService:
         sku = values.get("sku")
         if sku:
             query = Product.query.filter_by(sku=sku)
+            if workspace_id is not None:
+                query = query.filter_by(workspace_id=workspace_id)
             if current_product is not None:
                 query = query.filter(Product.id != current_product.id)
             if query.first():
@@ -226,6 +228,8 @@ class ProductService:
         barcode = values.get("barcode")
         if barcode:
             query = Product.query.filter_by(barcode=barcode)
+            if workspace_id is not None:
+                query = query.filter_by(workspace_id=workspace_id)
             if current_product is not None:
                 query = query.filter(Product.id != current_product.id)
             if query.first():
@@ -243,6 +247,9 @@ class ProductService:
         workspace_id: int | None = None,
     ) -> Product:
         values = ProductService.validate(payload, workspace_id=workspace_id)
+        if workspace_id is None:
+            raise ProductValidationError({"workspace_id": "is required"})
+        values["workspace_id"] = workspace_id
         product = Product(**values)
         db.session.add(product)
         if commit:
@@ -326,6 +333,13 @@ def serialize_product(product: Product, *, include_sensitive: bool = True) -> di
         "name": product.name,
         "category": product.category,
         "unit_of_measure": product.unit_of_measure,
+        "unit_conversions": [
+            {
+                "unit_code": conversion.unit_code,
+                "to_base_factor": number_for_json(conversion.to_base_factor),
+            }
+            for conversion in product.unit_conversions
+        ],
         "cost_price": number_for_json(product.cost_price),
         "sell_price": number_for_json(product.sell_price),
         "reorder_point": product.reorder_point,
@@ -464,7 +478,10 @@ class ProductCSVImporter:
                     result.errors.append({"row": row_number, "errors": row_errors})
                     continue
 
-                existing = Product.query.filter_by(sku=sku).first() if sku else None
+                existing_query = Product.query.filter_by(sku=sku)
+                if workspace_id is not None:
+                    existing_query = existing_query.filter_by(workspace_id=workspace_id)
+                existing = existing_query.first() if sku else None
                 try:
                     if existing and update_existing:
                         ProductService.update(

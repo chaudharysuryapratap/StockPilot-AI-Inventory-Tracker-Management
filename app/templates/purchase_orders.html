@@ -1,0 +1,85 @@
+{% extends 'base.html' %}
+{% block title %}Purchase orders · StockPilot AI{% endblock %}
+{% block heading %}Purchase orders & receiving{% endblock %}
+{% block content %}
+<section class="hero-row">
+  <div><p class="eyebrow">INBOUND PROCUREMENT</p><h2>Order, approve, receive, and match</h2><p class="subhead">Quantities are normalized to each product's base unit while retaining supplier packaging units.</p></div>
+  <form method="post" action="{{ url_for('web.generate_purchase_order_drafts_form') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="button" type="submit">Generate AI drafts</button>
+  </form>
+</section>
+
+<section class="metric-grid">
+  <article class="metric-card"><span>Open POs</span><strong>{{ orders|selectattr('status', 'in', ['draft','approved','partially_received'])|list|length }}</strong><small>Draft through partial receipt</small></article>
+  <article class="metric-card"><span>Near-expiry lots</span><strong>{{ recommendations.near_expiry|length }}</strong><small>Within {{ recommendations.settings.near_expiry_days }} days</small></article>
+  <article class="metric-card"><span>Dead stock</span><strong>{{ recommendations.dead_stock|length }}</strong><small>{{ recommendations.settings.dead_stock_days }}-day rule</small></article>
+  <article class="metric-card"><span>Forecast MAE</span><strong>{{ accuracy.mae if accuracy.mae is not none else '—' }}</strong><small>{{ accuracy.evaluated_forecasts }} evaluated forecasts</small></article>
+</section>
+
+<section class="manage-grid procurement-tools">
+  <article class="panel form-panel wide">
+    <div class="panel-header"><div><p class="eyebrow">MANUAL DRAFT</p><h2>Create a purchase order</h2></div></div>
+    <form method="post" action="{{ url_for('web.create_purchase_order_form') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-row triple">
+        <label>Supplier<select name="supplier_id" required><option value="">Select</option>{% for supplier in suppliers %}<option value="{{ supplier.id }}">{{ supplier.name }}</option>{% endfor %}</select></label>
+        <label>Location<select name="location_id" required><option value="">Select</option>{% for location in locations %}<option value="{{ location.id }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label>
+        <label>Expected date<input type="date" name="expected_at"></label>
+      </div>
+      <div class="form-row triple">
+        <label>Product<select id="manual-po-product" name="sku" required><option value="">Select</option>{% for product in products %}<option value="{{ product.sku }}" data-base-unit="{{ product.unit_of_measure }}">{{ product.sku }} · {{ product.name }}</option>{% endfor %}</select></label>
+        <label>Quantity<input type="number" name="quantity" min="0.01" step="0.01" required></label>
+        <label>Unit<input id="manual-po-unit" name="unit" maxlength="20" placeholder="Product base unit or configured pack" required></label>
+      </div>
+      <div class="form-row"><label>Unit cost<input type="number" name="unit_cost" min="0" step="0.01" value="0"></label><label>Note<input name="note" maxlength="500"></label></div>
+      <button class="button" type="submit">Create draft</button>
+    </form>
+  </article>
+  <article class="panel form-panel">
+    <div class="panel-header"><div><p class="eyebrow">UNIT CONVERSION</p><h2>Define supplier packaging</h2></div></div>
+    <form method="post" id="unit-conversion-form" action="{{ url_for('web.create_unit_conversion_form', product_id=products[0].id if products else 0) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Product<select id="conversion-product" required>{% for product in products %}<option value="{{ product.id }}">{{ product.sku }} · base {{ product.unit_of_measure }}</option>{% endfor %}</select></label>
+      <label>Packaging unit<input name="unit_code" maxlength="20" placeholder="box" required></label>
+      <label>Base units per package<input type="number" name="to_base_factor" min="0.000001" step="0.000001" placeholder="12" required></label>
+      <button class="button secondary" type="submit" {% if not products %}disabled{% endif %}>Save conversion</button>
+    </form>
+  </article>
+</section>
+
+<section class="panel">
+  <div class="panel-header"><div><p class="eyebrow">ORDER REGISTER</p><h2>Ordered versus received</h2></div></div>
+  {% if orders %}
+    <div class="po-list">
+      {% for order in orders %}
+        <article class="po-card">
+          <header><div><strong>PO {{ order.po_uid[:8] }}</strong><small>{{ order.supplier.name }} → {{ order.location.code }} · {{ order.source|upper }}</small></div><span class="mini-badge">{{ order.status|replace('_',' ')|title }}</span></header>
+          {% if order.ai_rationale %}<p class="form-help">{{ order.ai_rationale }}</p>{% endif %}
+          <div class="table-wrap"><table><thead><tr><th>Product</th><th>Ordered</th><th>Received</th><th>Remaining</th></tr></thead><tbody>
+          {% for item in order.items %}<tr><td><strong>{{ item.product.sku }}</strong><small>{{ item.product.name }}</small></td><td>{{ item.ordered_quantity }} {{ item.product.unit_of_measure }}<small>{{ item.order_unit }} × {{ item.conversion_to_base }}</small></td><td>{{ item.received_quantity }}</td><td>{{ item.ordered_quantity - item.received_quantity }}</td></tr>{% endfor %}
+          </tbody></table></div>
+          {% if order.status == 'draft' %}
+            <form method="post" action="{{ url_for('web.approve_purchase_order_form', order_id=order.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button" type="submit">Approve purchase order</button></form>
+          {% elif order.status in ['approved','partially_received'] %}
+            {% for item in order.items if item.received_quantity < item.ordered_quantity %}
+              <form class="po-receipt-form" method="post" action="{{ url_for('web.receive_purchase_order_form', order_id=order.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="item_id" value="{{ item.id }}">
+                <div class="form-row triple"><label>Receive {{ item.product.sku }}<input type="number" name="quantity" min="0.01" step="0.01" required></label><label>Unit<input name="unit" value="{{ item.order_unit }}" required></label><label>Bin code<input name="bin_code" maxlength="50"></label></div>
+                <div class="form-row triple"><label>Lot number<input name="lot_number" maxlength="100" {% if item.product.is_perishable %}required{% endif %}></label><label>Manufactured<input type="date" name="manufactured_at"></label><label>Expiry<input type="date" name="expiry_date" {% if item.product.is_perishable %}required{% endif %}></label></div>
+                <button class="button secondary" type="submit">Post partial receipt</button>
+              </form>
+            {% endfor %}
+          {% endif %}
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}<div class="empty-state"><span>⇣</span><h3>No purchase orders yet</h3><p>Create one manually or generate drafts from current forecasts.</p></div>{% endif %}
+</section>
+
+<section class="content-grid">
+  <article class="panel"><div class="panel-header"><div><p class="eyebrow">EXPIRY CONTROL</p><h2>Near-expiry lots</h2></div></div>{% for row in recommendations.near_expiry %}<div class="recommendation"><div><strong>{{ row.sku }} · lot {{ row.lot_number }}</strong><small>{{ row.location }} · {{ row.quantity_on_hand }} units · expires {{ row.expiry_date }}</small></div><span class="mini-badge">{{ row.days_remaining }} days</span></div>{% else %}<p class="form-help">No lots are near expiry.</p>{% endfor %}</article>
+  <article class="panel"><div class="panel-header"><div><p class="eyebrow">AGEING</p><h2>Dead-stock candidates</h2></div></div>{% for row in recommendations.dead_stock %}<div class="recommendation"><div><strong>{{ row.sku }}</strong><small>{{ row.quantity_on_hand }} units · {% if row.last_sale_at %}last sold {{ row.last_sale_at[:10] }}{% else %}no recorded sales{% endif %}</small></div></div>{% else %}<p class="form-help">No stocked products meet the dead-stock rule.</p>{% endfor %}</article>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='procurement.js') }}" defer></script>{% endblock %}

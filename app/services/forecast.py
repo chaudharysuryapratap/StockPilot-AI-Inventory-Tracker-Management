@@ -10,7 +10,15 @@ from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 from app import db
-from app.models import DemandInsight, Product, Sale, SaleItem, StockLevel, utcnow
+from app.models import (
+    DemandInsight,
+    InventoryLocation,
+    Product,
+    Sale,
+    SaleItem,
+    StockLevel,
+    utcnow,
+)
 from app.services.bedrock import BedrockNarrator
 from app.services.products import number_for_json
 
@@ -59,7 +67,9 @@ class ForecastResult:
 
 class ForecastService:
     @staticmethod
-    def run(now: datetime | None = None) -> list[ForecastResult]:
+    def run(
+        now: datetime | None = None, *, workspace_id: int | None = None
+    ) -> list[ForecastResult]:
         now = now or utcnow()
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
@@ -67,7 +77,7 @@ class ForecastService:
 
         lookback_days = current_app.config["FORECAST_LOOKBACK_DAYS"]
         cutoff = now - timedelta(days=lookback_days)
-        raw_sales = (
+        sales_query = (
             db.session.query(
                 SaleItem.product_id,
                 Sale.location_id,
@@ -76,22 +86,30 @@ class ForecastService:
             )
             .join(Sale, SaleItem.sale_id == Sale.id)
             .filter(Sale.occurred_at >= cutoff)
-            .all()
         )
+        if workspace_id is not None:
+            sales_query = sales_query.filter(Sale.workspace_id == workspace_id)
+        raw_sales = sales_query.all()
         sales_by_stock: dict[tuple[int, int], dict] = defaultdict(lambda: defaultdict(int))
         for product_id, location_id, occurred_at, quantity in raw_sales:
             sale_date = occurred_at.date()
             sales_by_stock[(product_id, location_id)][sale_date] += float(quantity)
 
-        stock_levels = (
+        stock_query = (
             StockLevel.query.options(
                 joinedload(StockLevel.product).joinedload(Product.preferred_supplier),
                 joinedload(StockLevel.location),
             )
             .join(Product, StockLevel.product_id == Product.id)
+            .join(InventoryLocation, StockLevel.location_id == InventoryLocation.id)
             .filter(Product.active.is_(True))
-            .all()
         )
+        if workspace_id is not None:
+            stock_query = stock_query.filter(
+                Product.workspace_id == workspace_id,
+                InventoryLocation.workspace_id == workspace_id,
+            )
+        stock_levels = stock_query.all()
 
         stock_by_location: dict[tuple[int, int], list[StockLevel]] = defaultdict(list)
         for stock in stock_levels:

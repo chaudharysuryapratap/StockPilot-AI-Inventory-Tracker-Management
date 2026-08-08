@@ -69,6 +69,11 @@ class Config:
     CRITICAL_STOCKOUT_DAYS = max(
         1, int(os.getenv("CRITICAL_STOCKOUT_DAYS", "3"))
     )
+    NEAR_EXPIRY_DAYS = max(1, int(os.getenv("NEAR_EXPIRY_DAYS", "30")))
+    DEAD_STOCK_DAYS = max(1, int(os.getenv("DEAD_STOCK_DAYS", "90")))
+    FORECAST_ACCURACY_HORIZON_DAYS = max(
+        1, int(os.getenv("FORECAST_ACCURACY_HORIZON_DAYS", "7"))
+    )
     REPORT_CURRENCY = os.getenv("REPORT_CURRENCY", "INR").strip().upper() or "INR"
 
     AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")

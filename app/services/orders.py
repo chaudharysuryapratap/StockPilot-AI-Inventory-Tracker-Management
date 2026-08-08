@@ -155,7 +155,7 @@ class SalesOrderService:
         requested = _normalize_items(payload.get("items"))
 
         location = InventoryLocation.query.filter_by(
-            code=location_code, is_active=True
+            workspace_id=actor.workspace_id, code=location_code, is_active=True
         ).first()
         if location is None or location.workspace_id not in (None, actor.workspace_id):
             raise UnknownInventoryReferenceError(
@@ -163,6 +163,7 @@ class SalesOrderService:
             )
 
         products = Product.query.filter(
+            Product.workspace_id == actor.workspace_id,
             Product.sku.in_(requested), Product.is_active.is_(True)
         ).all()
         products_by_sku = {product.sku: product for product in products}
@@ -173,7 +174,9 @@ class SalesOrderService:
             )
 
         if external_id:
-            existing = SalesOrder.query.filter_by(external_id=external_id).first()
+            existing = SalesOrder.query.filter_by(
+                workspace_id=actor.workspace_id, external_id=external_id
+            ).first()
             if existing:
                 if existing.workspace_id != actor.workspace_id or not _matching_order(
                     existing,
@@ -265,7 +268,9 @@ class SalesOrderService:
         except IntegrityError as error:
             db.session.rollback()
             if external_id:
-                existing = SalesOrder.query.filter_by(external_id=external_id).first()
+                existing = SalesOrder.query.filter_by(
+                    workspace_id=actor.workspace_id, external_id=external_id
+                ).first()
                 if existing and existing.workspace_id == actor.workspace_id:
                     if _matching_order(
                         existing,
@@ -285,7 +290,9 @@ class SalesOrderService:
             # external ID before reporting a false shortage.
             db.session.rollback()
             if external_id:
-                existing = SalesOrder.query.filter_by(external_id=external_id).first()
+                existing = SalesOrder.query.filter_by(
+                    workspace_id=actor.workspace_id, external_id=external_id
+                ).first()
                 if existing and existing.workspace_id == actor.workspace_id:
                     if _matching_order(
                         existing,
@@ -430,6 +437,7 @@ class SalesOrderService:
 
             shipped_at = utcnow()
             sale = Sale(
+                workspace_id=order.workspace_id,
                 external_id=f"sales-order:{order.order_uid}",
                 source=order.channel,
                 location=order.location,
@@ -453,6 +461,15 @@ class SalesOrderService:
                 stock.quantity_on_hand -= quantity
                 stock.quantity_reserved -= quantity
                 stock.updated_at = shipped_at
+                from app.services.procurement import consume_tracked_lots
+
+                consume_tracked_lots(
+                    workspace_id=order.workspace_id,
+                    product_id=allocation.order_item.product_id,
+                    location_id=stock.location_id,
+                    bin_id=stock.bin_id,
+                    quantity=quantity,
+                )
                 db.session.add(
                     InventoryMovement(
                         product=allocation.order_item.product,

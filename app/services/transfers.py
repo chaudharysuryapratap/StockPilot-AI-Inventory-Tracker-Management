@@ -33,11 +33,13 @@ def _trimmed(payload: Mapping[str, object], key: str, limit: int) -> str | None:
     return value
 
 
-def _find_location(code: object, field: str) -> InventoryLocation:
+def _find_location(code: object, field: str, workspace_id: int) -> InventoryLocation:
     normalized = str(code or "").strip().upper()
     if not normalized:
         raise ValueError(f"{field} is required")
-    location = InventoryLocation.query.filter_by(code=normalized, is_active=True).first()
+    location = InventoryLocation.query.filter_by(
+        workspace_id=workspace_id, code=normalized, is_active=True
+    ).first()
     if location is None:
         raise UnknownInventoryReferenceError(
             f"No active inventory location exists for code '{normalized}'"
@@ -85,15 +87,20 @@ class TransferService:
         sku = str(payload.get("sku", "") or "").strip().upper()
         if not sku:
             raise ValueError("sku is required")
-        product = Product.query.filter_by(sku=sku, is_active=True).first()
+        product = Product.query.filter_by(
+            workspace_id=actor.workspace_id, sku=sku, is_active=True
+        ).first()
         if product is None:
             raise UnknownInventoryReferenceError(
                 f"No active product exists for SKU '{sku}'"
             )
 
-        source = _find_location(payload.get("source_location_code"), "source_location_code")
+        source = _find_location(
+            payload.get("source_location_code"), "source_location_code", actor.workspace_id
+        )
         destination = _find_location(
-            payload.get("destination_location_code"), "destination_location_code"
+            payload.get("destination_location_code"), "destination_location_code",
+            actor.workspace_id,
         )
         source_bin = _find_bin(source, payload.get("source_bin_code"), "source_bin_code")
         destination_bin = _find_bin(
@@ -113,7 +120,9 @@ class TransferService:
         if source_bin is not None:
             idempotency_match["source_bin_id"] = source_bin.id
         if external_id:
-            existing = StockTransfer.query.filter_by(external_id=external_id).first()
+            existing = StockTransfer.query.filter_by(
+                workspace_id=actor.workspace_id, external_id=external_id
+            ).first()
             if existing:
                 if not _matching_transfer(existing, idempotency_match):
                     raise TransferConflictError(
@@ -208,6 +217,7 @@ class TransferService:
             db.session.add(destination_stock)
 
         transfer = StockTransfer(
+            workspace_id=actor.workspace_id,
             external_id=external_id,
             product=product,
             source_location=source,
@@ -229,6 +239,17 @@ class TransferService:
             source_stock.updated_at = utcnow()
             destination_stock.quantity_on_hand += quantity
             destination_stock.updated_at = utcnow()
+            from app.services.procurement import transfer_tracked_lots
+
+            transfer_tracked_lots(
+                workspace_id=actor.workspace_id,
+                product_id=product.id,
+                source_location_id=source.id,
+                source_bin_id=source_bin.id if source_bin else None,
+                destination_location_id=destination.id,
+                destination_bin_id=destination_bin.id if destination_bin else None,
+                quantity=quantity,
+            )
             db.session.add_all(
                 [
                     InventoryMovement(
@@ -262,7 +283,9 @@ class TransferService:
         except IntegrityError:
             db.session.rollback()
             if external_id:
-                existing = StockTransfer.query.filter_by(external_id=external_id).first()
+                existing = StockTransfer.query.filter_by(
+                    workspace_id=actor.workspace_id, external_id=external_id
+                ).first()
                 if existing and _matching_transfer(existing, expected):
                     return existing, False
             raise

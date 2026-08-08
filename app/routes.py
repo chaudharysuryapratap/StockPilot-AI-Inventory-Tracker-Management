@@ -33,6 +33,7 @@ from app.models import (
     InventoryLocation,
     InventoryMovement,
     Product,
+    PurchaseOrder,
     ReturnAuthorization,
     SalesOrder,
     StockLevel,
@@ -107,6 +108,21 @@ from app.services.transfers import (
     serialize_movement,
     serialize_transfer,
 )
+from app.services.procurement import (
+    ProcurementConflictError,
+    ProcurementError,
+    ProcurementStateError,
+    PurchaseOrderService,
+    UnitConversionService,
+    serialize_purchase_order,
+    serialize_receipt,
+)
+from app.services.intelligence import (
+    DashboardChatService,
+    ForecastAccuracyService,
+    dashboard_context,
+    inventory_recommendations,
+)
 
 
 web_bp = Blueprint("web", __name__)
@@ -144,7 +160,7 @@ def _current_actor() -> User:
 
 
 def _validate_csrf() -> None:
-    supplied = request.form.get("csrf_token", "")
+    supplied = request.form.get("csrf_token", "") or request.headers.get("X-CSRF-Token", "")
     expected = session.get("csrf_token", "")
     if not supplied or not expected or not secrets.compare_digest(supplied, expected):
         abort(400, description="invalid form token")
@@ -222,6 +238,8 @@ def session_api_access(view):
         actor = _session_user()
         if current_app.config["STAFF_AUTH_ENABLED"] and actor is None:
             return jsonify({"error": "authentication required"}), 401
+        if current_app.config["STAFF_AUTH_ENABLED"] and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            _validate_csrf()
         g.current_user = actor or ensure_default_identity()
         return view(*args, **kwargs)
 
@@ -296,11 +314,19 @@ def _stockout_is_soon(serialized: dict) -> bool:
 
 
 def _dashboard_data() -> dict:
-    insights = [serialize_insight(row) for row in latest_insights()]
+    actor = _current_actor()
+    insight_rows = [
+        row for row in latest_insights()
+        if row.location.workspace_id == actor.workspace_id
+    ]
+    insights = [serialize_insight(row) for row in insight_rows]
     total_units = (
         db.session.query(func.coalesce(func.sum(StockLevel.quantity_on_hand), 0))
         .join(Product, StockLevel.product_id == Product.id)
-        .filter(Product.is_active.is_(True))
+        .filter(
+            Product.workspace_id == actor.workspace_id,
+            Product.is_active.is_(True),
+        )
         .scalar()
     )
     at_risk = [
@@ -310,12 +336,22 @@ def _dashboard_data() -> dict:
     ]
     return {
         "metrics": {
-            "active_products": Product.query.filter_by(is_active=True).count(),
-            "locations": InventoryLocation.query.count(),
+            "active_products": Product.query.filter_by(
+                workspace_id=actor.workspace_id, is_active=True
+            ).count(),
+            "locations": InventoryLocation.query.filter_by(
+                workspace_id=actor.workspace_id
+            ).count(),
             "total_units": number_for_json(total_units),
             "items_at_risk": len(at_risk),
         },
         "insights": insights,
+        "recommendations": inventory_recommendations(
+            workspace_id=actor.workspace_id
+        ),
+        "forecast_accuracy": ForecastAccuracyService.summary(
+            workspace_id=actor.workspace_id
+        ),
     }
 
 
@@ -336,6 +372,38 @@ def _supplier_for_actor(supplier_id: int) -> Supplier:
     if supplier is None or supplier.workspace_id != _current_actor().workspace_id:
         abort(404)
     return supplier
+
+
+def _product_for_actor(product_id: int) -> Product:
+    actor = _current_actor()
+    product = Product.query.filter_by(
+        id=product_id, workspace_id=actor.workspace_id
+    ).first()
+    if product is None:
+        abort(404)
+    return product
+
+
+def _location_for_actor(location_id: int) -> InventoryLocation:
+    actor = _current_actor()
+    location = InventoryLocation.query.filter_by(
+        id=location_id, workspace_id=actor.workspace_id
+    ).first()
+    if location is None:
+        abort(404)
+    return location
+
+
+def _bin_for_actor(bin_id: int) -> Bin:
+    actor = _current_actor()
+    bin_record = (
+        Bin.query.join(InventoryLocation)
+        .filter(Bin.id == bin_id, InventoryLocation.workspace_id == actor.workspace_id)
+        .first()
+    )
+    if bin_record is None:
+        abort(404)
+    return bin_record
 
 
 def _workspace_forecasts(results: list, workspace_id: int) -> list:
@@ -375,6 +443,13 @@ def _return_for_actor(return_id: int) -> ReturnAuthorization:
     if rma is None or rma.workspace_id != _current_actor().workspace_id:
         abort(404)
     return rma
+
+
+def _purchase_order_for_actor(order_id: int) -> PurchaseOrder:
+    order = db.session.get(PurchaseOrder, order_id)
+    if order is None or order.workspace_id != _current_actor().workspace_id:
+        abort(404)
+    return order
 
 
 def _order_form_payload() -> dict:
@@ -545,12 +620,13 @@ def picker_page():
 
 @web_bp.get("/products")
 def products_page():
+    actor = _current_actor()
     include_archived = request.args.get("include_archived", "").lower() in {
         "1",
         "true",
         "yes",
     }
-    query = Product.query
+    query = Product.query.filter_by(workspace_id=actor.workspace_id)
     if not include_archived:
         query = query.filter_by(is_active=True)
     return render_template(
@@ -566,16 +642,23 @@ def manage_page():
     actor = _current_actor()
     return render_template(
         "manage.html",
-        products=Product.query.filter_by(is_active=True).order_by(Product.name).all(),
+        products=Product.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        ).order_by(Product.name).all(),
         suppliers=Supplier.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
         )
         .order_by(Supplier.name)
         .all(),
-        locations=InventoryLocation.query.filter_by(is_active=True)
+        locations=InventoryLocation.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        )
         .order_by(InventoryLocation.name)
         .all(),
-        bins=Bin.query.filter_by(is_active=True).order_by(Bin.code).all(),
+        bins=Bin.query.join(InventoryLocation).filter(
+            InventoryLocation.workspace_id == actor.workspace_id,
+            Bin.is_active.is_(True),
+        ).order_by(Bin.code).all(),
     )
 
 
@@ -666,16 +749,19 @@ def add_location_form():
 
 @web_bp.get("/locations")
 def locations_page():
+    actor = _current_actor()
     return render_template(
         "locations.html",
-        locations=InventoryLocation.query.order_by(InventoryLocation.name).all(),
+        locations=InventoryLocation.query.filter_by(
+            workspace_id=actor.workspace_id
+        ).order_by(InventoryLocation.name).all(),
     )
 
 
 @web_bp.route("/locations/<int:location_id>/edit", methods=["GET", "POST"])
 @roles_required("admin", "manager")
 def edit_location_form(location_id: int):
-    location = db.get_or_404(InventoryLocation, location_id)
+    location = _location_for_actor(location_id)
     if request.method == "POST":
         payload = request.form.to_dict()
         payload["is_active"] = "is_active" in request.form
@@ -691,7 +777,7 @@ def edit_location_form(location_id: int):
 @web_bp.post("/locations/<int:location_id>/bins")
 @roles_required("admin", "manager")
 def add_bin_form(location_id: int):
-    location = db.get_or_404(InventoryLocation, location_id)
+    location = _location_for_actor(location_id)
     try:
         bin_record = BinService.create(location, request.form.to_dict())
         flash(f"Bin {location.code}/{bin_record.code} was added.", "success")
@@ -703,7 +789,7 @@ def add_bin_form(location_id: int):
 @web_bp.route("/bins/<int:bin_id>/edit", methods=["GET", "POST"])
 @roles_required("admin", "manager")
 def edit_bin_form(bin_id: int):
-    bin_record = db.get_or_404(Bin, bin_id)
+    bin_record = _bin_for_actor(bin_id)
     if request.method == "POST":
         payload = request.form.to_dict()
         payload["is_active"] = "is_active" in request.form
@@ -737,7 +823,7 @@ def add_product_form():
 @web_bp.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
 @roles_required("admin", "manager")
 def edit_product_form(product_id: int):
-    product = db.get_or_404(Product, product_id)
+    product = _product_for_actor(product_id)
     if request.method == "POST":
         payload = request.form.to_dict()
         payload["is_perishable"] = "is_perishable" in request.form
@@ -763,7 +849,7 @@ def edit_product_form(product_id: int):
 @web_bp.post("/products/<int:product_id>/archive")
 @roles_required("admin", "manager")
 def archive_product_form(product_id: int):
-    product = db.get_or_404(Product, product_id)
+    product = _product_for_actor(product_id)
     ProductService.archive(product)
     flash(f"{product.name} was archived. Its history and stock were preserved.", "success")
     return redirect(url_for("web.products_page", include_archived=1))
@@ -772,7 +858,7 @@ def archive_product_form(product_id: int):
 @web_bp.post("/products/<int:product_id>/restore")
 @roles_required("admin", "manager")
 def restore_product_form(product_id: int):
-    product = db.get_or_404(Product, product_id)
+    product = _product_for_actor(product_id)
     ProductService.restore(product)
     flash(f"{product.name} was restored.", "success")
     return redirect(url_for("web.products_page", include_archived=1))
@@ -840,13 +926,19 @@ def adjust_stock_form():
 
 @web_bp.get("/transfers")
 def transfers_page():
+    actor = _current_actor()
     return render_template(
         "transfers.html",
-        products=Product.query.filter_by(is_active=True).order_by(Product.name).all(),
-        locations=InventoryLocation.query.filter_by(is_active=True)
+        products=Product.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        ).order_by(Product.name).all(),
+        locations=InventoryLocation.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        )
         .order_by(InventoryLocation.name)
         .all(),
-        transfers=StockTransfer.query.order_by(StockTransfer.created_at.desc()).limit(50).all(),
+        transfers=StockTransfer.query.filter_by(workspace_id=actor.workspace_id)
+        .order_by(StockTransfer.created_at.desc()).limit(50).all(),
         transfer_request_id=str(uuid4()),
         selected_sku=request.args.get("sku", "").strip().upper(),
     )
@@ -885,8 +977,12 @@ def orders_page():
         .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
         .limit(100)
         .all(),
-        products=Product.query.filter_by(is_active=True).order_by(Product.name).all(),
-        locations=InventoryLocation.query.filter_by(is_active=True)
+        products=Product.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        ).order_by(Product.name).all(),
+        locations=InventoryLocation.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        )
         .order_by(InventoryLocation.name)
         .all(),
         order_request_id=str(uuid4()),
@@ -1209,12 +1305,142 @@ def download_report(report_type: str, file_format: str):
 @roles_required("admin", "manager")
 def send_critical_alert_form():
     actor = _current_actor()
-    results = _workspace_forecasts(ForecastService.run(), actor.workspace_id)
+    results = ForecastService.run(workspace_id=actor.workspace_id)
     delivery = ReportMailer.send_critical_alerts(
         results, workspace_id=actor.workspace_id
     )
     flash(delivery.reason, "success" if delivery.sent else "error")
     return redirect(url_for("web.reports_page"))
+
+
+@web_bp.get("/purchase-orders")
+@roles_required("admin", "manager")
+def purchase_orders_page():
+    actor = _current_actor()
+    orders = (
+        PurchaseOrder.query.filter_by(workspace_id=actor.workspace_id)
+        .order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc())
+        .limit(100)
+        .all()
+    )
+    return render_template(
+        "purchase_orders.html",
+        orders=orders,
+        suppliers=Supplier.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        ).order_by(Supplier.name).all(),
+        locations=InventoryLocation.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        ).order_by(InventoryLocation.name).all(),
+        products=Product.query.filter_by(
+            workspace_id=actor.workspace_id, is_active=True
+        ).order_by(Product.name).all(),
+        recommendations=inventory_recommendations(workspace_id=actor.workspace_id),
+        accuracy=ForecastAccuracyService.summary(workspace_id=actor.workspace_id),
+    )
+
+
+@web_bp.post("/purchase-orders")
+@roles_required("admin", "manager")
+def create_purchase_order_form():
+    try:
+        order = PurchaseOrderService.create(
+            {
+                "supplier_id": request.form.get("supplier_id"),
+                "location_id": request.form.get("location_id"),
+                "expected_at": request.form.get("expected_at"),
+                "note": request.form.get("note"),
+                "items": [
+                    {
+                        "sku": request.form.get("sku"),
+                        "quantity": request.form.get("quantity"),
+                        "unit": request.form.get("unit"),
+                        "unit_cost": request.form.get("unit_cost"),
+                    }
+                ],
+            },
+            actor=_current_actor(),
+        )
+        flash(f"Draft purchase order {order.po_uid[:8]} was created.", "success")
+    except ProcurementError as error:
+        flash(str(error), "error")
+    return redirect(url_for("web.purchase_orders_page"))
+
+
+@web_bp.post("/purchase-orders/ai-draft")
+@roles_required("admin", "manager")
+def generate_purchase_order_drafts_form():
+    try:
+        orders = PurchaseOrderService.draft_from_recommendations(actor=_current_actor())
+        if orders:
+            flash(f"Created {len(orders)} AI-assisted purchase-order draft(s).", "success")
+        else:
+            flash("No forecast recommendations currently qualify for a draft.", "error")
+    except ProcurementError as error:
+        flash(str(error), "error")
+    return redirect(url_for("web.purchase_orders_page"))
+
+
+@web_bp.post("/purchase-orders/<int:order_id>/approve")
+@roles_required("admin", "manager")
+def approve_purchase_order_form(order_id: int):
+    try:
+        PurchaseOrderService.approve(
+            _purchase_order_for_actor(order_id), actor=_current_actor()
+        )
+        flash("Purchase order approved and ready to receive.", "success")
+    except ProcurementError as error:
+        flash(str(error), "error")
+    return redirect(url_for("web.purchase_orders_page"))
+
+
+@web_bp.post("/purchase-orders/<int:order_id>/receive")
+@roles_required("admin", "manager")
+def receive_purchase_order_form(order_id: int):
+    try:
+        _, created = PurchaseOrderService.receive(
+            _purchase_order_for_actor(order_id),
+            {
+                "external_receipt_id": request.form.get("external_receipt_id")
+                or f"WEB-{uuid4()}",
+                "items": [
+                    {
+                        "item_id": request.form.get("item_id"),
+                        "quantity": request.form.get("quantity"),
+                        "unit": request.form.get("unit"),
+                        "bin_code": request.form.get("bin_code"),
+                        "lot_number": request.form.get("lot_number"),
+                        "manufactured_at": request.form.get("manufactured_at"),
+                        "expiry_date": request.form.get("expiry_date"),
+                    }
+                ],
+            },
+            actor=_current_actor(),
+        )
+        flash("Receipt posted." if created else "Receipt was already posted.", "success")
+    except (ProcurementError, ProcurementConflictError, ProcurementStateError) as error:
+        flash(str(error), "error")
+    return redirect(url_for("web.purchase_orders_page"))
+
+
+@web_bp.post("/products/<int:product_id>/unit-conversions")
+@roles_required("admin", "manager")
+def create_unit_conversion_form(product_id: int):
+    actor = _current_actor()
+    product = Product.query.filter_by(
+        id=product_id, workspace_id=actor.workspace_id
+    ).first_or_404()
+    try:
+        UnitConversionService.define(
+            product,
+            request.form.get("unit_code"),
+            request.form.get("to_base_factor"),
+            actor=actor,
+        )
+        flash("Unit conversion saved.", "success")
+    except ProcurementError as error:
+        flash(str(error), "error")
+    return redirect(url_for("web.purchase_orders_page"))
 
 
 @api_bp.get("/health")
@@ -1256,12 +1482,13 @@ def dashboard_api():
 @api_bp.get("/locations")
 @api_read_access
 def locations_api():
+    actor = _current_actor()
     include_inactive = request.args.get("include_inactive", "").lower() in {
         "1",
         "true",
         "yes",
     }
-    query = InventoryLocation.query
+    query = InventoryLocation.query.filter_by(workspace_id=actor.workspace_id)
     if not include_inactive:
         query = query.filter_by(is_active=True)
     return jsonify(
@@ -1296,7 +1523,7 @@ def update_location_api(location_id: int):
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
     try:
         location = LocationService.update(
-            db.get_or_404(InventoryLocation, location_id),
+            _location_for_actor(location_id),
             request.get_json(silent=True) or {},
         )
     except LocationValidationError as error:
@@ -1312,7 +1539,7 @@ def create_bin_api(location_id: int):
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
     try:
         bin_record = BinService.create(
-            db.get_or_404(InventoryLocation, location_id),
+            _location_for_actor(location_id),
             request.get_json(silent=True) or {},
         )
     except LocationValidationError as error:
@@ -1328,7 +1555,7 @@ def update_bin_api(bin_id: int):
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
     try:
         bin_record = BinService.update(
-            db.get_or_404(Bin, bin_id), request.get_json(silent=True) or {}
+            _bin_for_actor(bin_id), request.get_json(silent=True) or {}
         )
     except LocationValidationError as error:
         return (
@@ -1419,10 +1646,11 @@ def products_api():
         "true",
         "yes",
     }
-    query = Product.query.options(
+    query = Product.query.filter_by(workspace_id=actor.workspace_id).options(
         selectinload(Product.stock_levels).selectinload(StockLevel.location),
         selectinload(Product.stock_levels).selectinload(StockLevel.bin),
         selectinload(Product.preferred_supplier),
+        selectinload(Product.unit_conversions),
     )
     if not include_archived:
         query = query.filter_by(is_active=True)
@@ -1446,7 +1674,7 @@ def product_api(product_id: int):
     return jsonify(
         {
             "product": serialize_product(
-                db.get_or_404(Product, product_id),
+                _product_for_actor(product_id),
                 include_sensitive=actor.role != "picker",
             )
         }
@@ -1462,10 +1690,15 @@ def barcode_lookup_api():
     if len(code) > 100:
         return jsonify({"error": "barcode must be 100 characters or fewer"}), 400
 
-    product = Product.query.filter_by(barcode=code, is_active=True).first()
+    actor = _current_actor()
+    product = Product.query.filter_by(
+        workspace_id=actor.workspace_id, barcode=code, is_active=True
+    ).first()
     matched_by = "barcode"
     if product is None:
-        product = Product.query.filter_by(sku=code.upper(), is_active=True).first()
+        product = Product.query.filter_by(
+            workspace_id=actor.workspace_id, sku=code.upper(), is_active=True
+        ).first()
         matched_by = "sku"
     if product is None:
         return jsonify({"error": "no active product matches this barcode"}), 404
@@ -1495,7 +1728,7 @@ def create_product():
 @api_bp.patch("/products/<int:product_id>")
 def update_product(product_id: int):
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
-    product = db.get_or_404(Product, product_id)
+    product = _product_for_actor(product_id)
     try:
         ProductService.update(
             product,
@@ -1510,14 +1743,14 @@ def update_product(product_id: int):
 @api_bp.delete("/products/<int:product_id>")
 def archive_product(product_id: int):
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
-    product = ProductService.archive(db.get_or_404(Product, product_id))
+    product = ProductService.archive(_product_for_actor(product_id))
     return jsonify({"product": serialize_product(product)})
 
 
 @api_bp.post("/products/<int:product_id>/restore")
 def restore_product(product_id: int):
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
-    product = ProductService.restore(db.get_or_404(Product, product_id))
+    product = ProductService.restore(_product_for_actor(product_id))
     return jsonify({"product": serialize_product(product)})
 
 
@@ -1569,8 +1802,11 @@ def stock_adjustment():
 @api_bp.get("/transfers")
 def transfers_api():
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    actor = _current_actor()
     limit = min(max(request.args.get("limit", 50, type=int), 1), 200)
-    transfers = StockTransfer.query.order_by(StockTransfer.created_at.desc()).limit(limit)
+    transfers = StockTransfer.query.filter_by(
+        workspace_id=actor.workspace_id
+    ).order_by(StockTransfer.created_at.desc()).limit(limit)
     return jsonify({"transfers": [serialize_transfer(item) for item in transfers]})
 
 
@@ -1841,11 +2077,14 @@ def receive_return_item_api(return_id: int, item_id: int):
 @api_bp.get("/audit/movements")
 def movements_api():
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    actor = _current_actor()
     limit = min(max(request.args.get("limit", 100, type=int), 1), 500)
-    query = InventoryMovement.query
+    query = InventoryMovement.query.join(InventoryLocation).filter(
+        InventoryLocation.workspace_id == actor.workspace_id
+    )
     movement_type = request.args.get("movement_type", "").strip()
     if movement_type:
-        query = query.filter_by(movement_type=movement_type)
+        query = query.filter(InventoryMovement.movement_type == movement_type)
     rows = query.order_by(InventoryMovement.created_at.desc(), InventoryMovement.id.desc()).limit(limit)
     return jsonify({"movements": [serialize_movement(row) for row in rows]})
 
@@ -1867,16 +2106,189 @@ def sales_webhook():
     return jsonify({"sale": serialize_sale(sale), "created": created}), 201 if created else 200
 
 
+@api_bp.get("/purchase-orders")
+@api_read_access
+def purchase_orders_api():
+    actor = _current_actor()
+    query = PurchaseOrder.query.filter_by(workspace_id=actor.workspace_id)
+    status = request.args.get("status", "").strip().lower()
+    if status:
+        query = query.filter_by(status=status)
+    rows = query.order_by(
+        PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc()
+    ).limit(200).all()
+    return jsonify({"purchase_orders": [serialize_purchase_order(row) for row in rows]})
+
+
+@api_bp.post("/purchase-orders")
+def create_purchase_order_api():
+    _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    try:
+        order = PurchaseOrderService.create(
+            request.get_json(silent=True) or {}, actor=_current_actor()
+        )
+    except ProcurementConflictError as error:
+        return jsonify({"error": str(error)}), 409
+    except ProcurementError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"purchase_order": serialize_purchase_order(order)}), 201
+
+
+@api_bp.post("/purchase-orders/ai-drafts")
+def generate_purchase_order_drafts_api():
+    _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    try:
+        orders = PurchaseOrderService.draft_from_recommendations(actor=_current_actor())
+    except ProcurementError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify(
+        {"purchase_orders": [serialize_purchase_order(order) for order in orders]}
+    ), 201 if orders else 200
+
+
+@api_bp.get("/purchase-orders/<int:order_id>")
+@api_read_access
+def purchase_order_api(order_id: int):
+    return jsonify(
+        {"purchase_order": serialize_purchase_order(_purchase_order_for_actor(order_id))}
+    )
+
+
+@api_bp.post("/purchase-orders/<int:order_id>/approve")
+def approve_purchase_order_api(order_id: int):
+    _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    try:
+        order = PurchaseOrderService.approve(
+            _purchase_order_for_actor(order_id), actor=_current_actor()
+        )
+    except ProcurementStateError as error:
+        return jsonify({"error": str(error)}), 409
+    except ProcurementError as error:
+        return jsonify({"error": str(error)}), 403
+    return jsonify({"purchase_order": serialize_purchase_order(order)})
+
+
+@api_bp.post("/purchase-orders/<int:order_id>/receipts")
+def receive_purchase_order_api(order_id: int):
+    _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    try:
+        receipt, created = PurchaseOrderService.receive(
+            _purchase_order_for_actor(order_id),
+            request.get_json(silent=True) or {},
+            actor=_current_actor(),
+        )
+    except (ProcurementStateError, ProcurementConflictError) as error:
+        return jsonify({"error": str(error)}), 409
+    except ProcurementError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify({"receipt": serialize_receipt(receipt), "created": created}), 201 if created else 200
+
+
+@api_bp.post("/products/<int:product_id>/unit-conversions")
+def create_unit_conversion_api(product_id: int):
+    _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    actor = _current_actor()
+    try:
+        conversion = UnitConversionService.define(
+            _product_for_actor(product_id),
+            (request.get_json(silent=True) or {}).get("unit_code"),
+            (request.get_json(silent=True) or {}).get("to_base_factor"),
+            actor=actor,
+        )
+    except ProcurementError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify(
+        {
+            "conversion": {
+                "id": conversion.id,
+                "product_id": conversion.product_id,
+                "unit_code": conversion.unit_code,
+                "to_base_factor": number_for_json(conversion.to_base_factor),
+                "base_unit": conversion.product.unit_of_measure,
+            }
+        }
+    ), 201
+
+
+@api_bp.get("/recommendations/inventory")
+@api_read_access
+def inventory_recommendations_api():
+    return jsonify(
+        inventory_recommendations(workspace_id=_current_actor().workspace_id)
+    )
+
+
+@api_bp.post("/forecast-accuracy/evaluate")
+def evaluate_forecast_accuracy_api():
+    _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
+    actor = _current_actor()
+    outcomes = ForecastAccuracyService.evaluate(workspace_id=actor.workspace_id)
+    return jsonify(
+        {
+            "evaluated": len(outcomes),
+            "summary": ForecastAccuracyService.summary(
+                workspace_id=actor.workspace_id
+            ),
+        }
+    )
+
+
+@api_bp.get("/forecast-accuracy")
+@api_read_access
+def forecast_accuracy_api():
+    return jsonify(
+        ForecastAccuracyService.summary(workspace_id=_current_actor().workspace_id)
+    )
+
+
+@api_bp.post("/assistant/chat")
+@session_api_access
+def dashboard_chat_api():
+    payload = request.get_json(silent=True) or {}
+    try:
+        conversation, response = DashboardChatService.ask(
+            payload.get("question"),
+            actor=_current_actor(),
+            conversation_id=payload.get("conversation_id"),
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    return jsonify(
+        {
+            "conversation_id": conversation.id,
+            "answer": response.content,
+            "context": response.context_snapshot,
+        }
+    )
+
+
+@api_bp.get("/assistant/context")
+@api_read_access
+def dashboard_assistant_context_api():
+    return jsonify(dashboard_context(workspace_id=_current_actor().workspace_id))
+
+
 @api_bp.get("/insights")
 @api_read_access
 def insights_api():
-    return jsonify({"insights": [serialize_insight(row) for row in latest_insights()]})
+    actor = _current_actor()
+    return jsonify(
+        {
+            "insights": [
+                serialize_insight(row)
+                for row in latest_insights()
+                if row.location.workspace_id == actor.workspace_id
+            ]
+        }
+    )
 
 
 @api_bp.post("/analysis/run")
 def run_analysis():
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
-    results = ForecastService.run()
+    actor = _current_actor()
+    ForecastAccuracyService.evaluate(workspace_id=actor.workspace_id)
+    results = ForecastService.run(workspace_id=actor.workspace_id)
     return jsonify(
         {
             "analyzed": len(results),
@@ -1915,7 +2327,7 @@ def report_api(report_type: str):
 def send_critical_alert_api():
     _require_token("X-Internal-Token", "INTERNAL_API_TOKEN")
     actor = _current_actor()
-    results = _workspace_forecasts(ForecastService.run(), actor.workspace_id)
+    results = ForecastService.run(workspace_id=actor.workspace_id)
     result = ReportMailer.send_critical_alerts(
         results, workspace_id=actor.workspace_id
     )

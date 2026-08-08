@@ -18,6 +18,7 @@ from app.schema import (
     SPRINT_5_SCHEMA_VERSION,
     SPRINT_6_SCHEMA_VERSION,
     SPRINT_7_SCHEMA_VERSION,
+    SPRINT_8_SCHEMA_VERSION,
     migrate_schema,
 )
 
@@ -45,9 +46,20 @@ def test_explicit_migration_initializes_an_empty_database(tmp_path):
         tables = set(inspect(db.engine).get_table_names())
 
         assert first.applied is True
-        assert first.version == SPRINT_7_SCHEMA_VERSION
+        assert first.version == SPRINT_8_SCHEMA_VERSION
         assert second.applied is False
-        assert {"products", "stock_levels", "schema_migrations"} <= tables
+        assert {
+            "products",
+            "stock_levels",
+            "schema_migrations",
+            "purchase_orders",
+            "purchase_order_items",
+            "purchase_receipts",
+            "inventory_lots",
+            "unit_conversions",
+            "forecast_outcomes",
+            "chat_conversations",
+        } <= tables
 
 
 def test_unassigned_stock_position_is_unique(app, seeded_catalog):
@@ -345,7 +357,7 @@ def test_sprint1_migration_preserves_legacy_stock_data(tmp_path):
 
         assert first.applied is True
         assert second.applied is False
-        assert first.version == SPRINT_7_SCHEMA_VERSION
+        assert first.version == SPRINT_8_SCHEMA_VERSION
         assert first.applied_versions == (
             SPRINT_1_SCHEMA_VERSION,
             SPRINT_2_SCHEMA_VERSION,
@@ -354,6 +366,7 @@ def test_sprint1_migration_preserves_legacy_stock_data(tmp_path):
             SPRINT_5_SCHEMA_VERSION,
             SPRINT_6_SCHEMA_VERSION,
             SPRINT_7_SCHEMA_VERSION,
+            SPRINT_8_SCHEMA_VERSION,
         )
         assert "quantity_on_hand" in columns
         assert "quantity_reserved" in columns

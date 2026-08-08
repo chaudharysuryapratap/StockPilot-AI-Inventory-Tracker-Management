@@ -46,3 +46,42 @@ class BedrockNarrator:
         except (ClientError, BotoCoreError, KeyError, StopIteration) as error:
             current_app.logger.warning("Bedrock narrative skipped: %s", error)
             return None
+
+    @staticmethod
+    def answer(question: str, context: dict[str, Any]) -> str | None:
+        """Answer a dashboard question using only the server-built context snapshot."""
+        if not current_app.config["BEDROCK_ENABLED"]:
+            return None
+        system_prompt = (
+            "You are StockPilot's inventory analyst. Answer only from the supplied "
+            "dashboard context. Be concise and operational. If the context does not "
+            "support the answer, say so. Never invent stock, demand, dates, or accuracy values."
+        )
+        try:
+            client = boto3.client(
+                "bedrock-runtime", region_name=current_app.config["AWS_REGION"]
+            )
+            response = client.converse(
+                modelId=current_app.config["BEDROCK_MODEL_ID"],
+                system=[{"text": system_prompt}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "text": json.dumps(
+                                    {"question": question, "dashboard_context": context},
+                                    default=str,
+                                )
+                            }
+                        ],
+                    }
+                ],
+                inferenceConfig={"maxTokens": 300, "temperature": 0.1},
+            )
+            content = response["output"]["message"]["content"]
+            text = next((part.get("text") for part in content if part.get("text")), None)
+            return text.strip() if text else None
+        except (ClientError, BotoCoreError, KeyError, StopIteration) as error:
+            current_app.logger.warning("Bedrock dashboard answer skipped: %s", error)
+            return None

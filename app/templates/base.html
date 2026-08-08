@@ -41,6 +41,9 @@
             <a href="{{ url_for('web.reports_page') }}" class="nav-link {% if request.endpoint and 'report' in request.endpoint %}active{% endif %}">
               <span>▥</span> Reports & alerts
             </a>
+            <a href="{{ url_for('web.purchase_orders_page') }}" class="nav-link {% if request.endpoint and 'purchase_order' in request.endpoint %}active{% endif %}">
+              <span>⇣</span> Purchase orders
+            </a>
           {% endif %}
           <a href="{{ url_for('web.locations_page') }}" class="nav-link {% if request.endpoint in ['web.locations_page', 'web.edit_location_form', 'web.edit_bin_form'] %}active{% endif %}">
             <span>⌂</span> Locations & bins

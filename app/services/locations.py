@@ -78,6 +78,7 @@ class LocationService:
         *,
         partial: bool = False,
         current: InventoryLocation | None = None,
+        workspace_id: int | None = None,
     ) -> dict:
         if not isinstance(payload, Mapping):
             raise LocationValidationError({"payload": "must be an object"})
@@ -116,6 +117,11 @@ class LocationService:
         code = values.get("code")
         if code:
             query = InventoryLocation.query.filter_by(code=code)
+            effective_workspace_id = workspace_id or (
+                current.workspace_id if current is not None else None
+            )
+            if effective_workspace_id is not None:
+                query = query.filter_by(workspace_id=effective_workspace_id)
             if current is not None:
                 query = query.filter(InventoryLocation.id != current.id)
             if query.first():
@@ -136,8 +142,8 @@ class LocationService:
 
     @staticmethod
     def create(payload: Mapping[str, object], *, actor: User | None = None) -> InventoryLocation:
-        values = LocationService.validate(payload)
         actor = actor or ensure_default_identity(commit=False)
+        values = LocationService.validate(payload, workspace_id=actor.workspace_id)
         location = InventoryLocation(workspace_id=actor.workspace_id, **values)
         db.session.add(location)
         LocationService._commit()
@@ -145,7 +151,12 @@ class LocationService:
 
     @staticmethod
     def update(location: InventoryLocation, payload: Mapping[str, object]) -> InventoryLocation:
-        values = LocationService.validate(payload, partial=True, current=location)
+        values = LocationService.validate(
+            payload,
+            partial=True,
+            current=location,
+            workspace_id=location.workspace_id,
+        )
         if not values:
             raise LocationValidationError({"payload": "include at least one editable field"})
         for field, value in values.items():

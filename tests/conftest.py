@@ -43,6 +43,7 @@ def seeded_catalog(app):
             workspace_id=actor.workspace_id, name="Test location", code="TEST"
         )
         product = Product(
+            workspace_id=actor.workspace_id,
             sku="TEST-001",
             name="Test Product",
             unit="units",

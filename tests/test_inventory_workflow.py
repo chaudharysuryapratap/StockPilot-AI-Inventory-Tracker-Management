@@ -92,6 +92,7 @@ def test_forecast_creates_reorder_recommendation(app, seeded_catalog):
         now = utcnow()
         for day in range(1, 12):
             sale = Sale(
+                workspace_id=product.workspace_id,
                 external_id=f"forecast-{day}",
                 source="test",
                 location_id=location_id,

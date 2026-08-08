@@ -116,7 +116,11 @@ def test_order_creation_reserves_stock_and_is_idempotent(client, app, seeded_cat
 
 def test_reservation_is_atomic_when_any_order_line_is_short(client, app, seeded_catalog):
     with app.app_context():
-        second = Product(sku="SECOND-001", name="Second product")
+        second = Product(
+            workspace_id=db.session.get(Product, seeded_catalog["product_id"]).workspace_id,
+            sku="SECOND-001",
+            name="Second product",
+        )
         db.session.add(second)
         db.session.flush()
         db.session.add(
