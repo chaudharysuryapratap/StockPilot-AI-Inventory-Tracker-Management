@@ -2,10 +2,11 @@
 
 A portfolio-ready inventory system for retailers and restaurants. It consumes sale events in near real time, updates stock safely, forecasts demand from historical sales, maintains supplier, fulfilment, and returns operations, exports risk/valuation reports, and emails owner-ready reorder actions.
 
-StockPilot deliberately supports one business workspace per deployment. The
-workspace row remains the ownership and audit boundary, catalogue and operational
-identifiers are workspace-scoped, and a configured single-workspace deployment
-fails closed if unexpected tenant rows are introduced.
+StockPilot supports multiple isolated business workspaces in one deployment. A
+person can belong to several workspaces, switch between them, and hold a different
+Admin, Manager, or Picker role in each. Workspace rows remain the ownership and
+audit boundary for catalogues, warehouses, orders, settings, integrations, and AI
+context; signed cursors and every service lookup are tenant-bound.
 
 The application is deliberately split into two kinds of intelligence:
 
@@ -47,6 +48,9 @@ flowchart TD
 | CSV bulk import | Atomic create/update import with row-level validation errors and a 1,000-row default limit |
 | Auditability | POS sales, order shipments, adjustments, and paired transfers record location, bin, reference, timestamp, and user attribution |
 | Named users and roles | Password-hashed Admin, Manager, and Picker accounts with server-enforced permissions and CSRF-protected browser actions |
+| SaaS workspaces | Unique business usernames, workspace creation/switching, per-workspace memberships, tenant settings, and secret-reference-only integration records |
+| Production authentication | Hashed single-use email verification, password-reset and invitation tokens; database-backed login throttling; TOTP MFA/recovery codes; and per-workspace OIDC SSO |
+| Scalable catalogues | Signed cursor pagination, totals, and server-side search/filtering for products, locations, suppliers, staff, transfers, sales orders, returns, and purchase orders |
 | Camera barcode scanner | Locally bundled `html5-qrcode` scanner with rear-camera, manual/USB-reader, SKU fallback, and live bin-level stock lookup |
 | Mobile picker | Touch-first `/picker` queue with exact bin positions, large action targets, connection awareness, and an installable read-only offline shell |
 | Returns / RMA | Shipped-order return requests, approval/rejection, partial receiving, restock/damaged disposition, over-return protection, and append-only RMA events |
@@ -93,7 +97,7 @@ python3 -m venv .venv
 .venv/bin/flask --app run run --debug
 ```
 
-On a fresh database, StockPilot redirects to `/signup` until the first Admin is created. After that, only an Admin can create named Manager or Picker accounts from **Users & roles**. Camera access works on `localhost`; an EC2 deployment must use HTTPS for browser camera permission.
+On a fresh database, StockPilot redirects to `/signup` until the first Admin creates a business identity and primary warehouse. An Admin can then invite people, create staff accounts, configure OIDC, or create another isolated workspace. Every signed-in user can enable TOTP MFA from **Security**. Camera access works on `localhost`; a deployed instance must use HTTPS for browser camera permission.
 
 Role boundaries:
 
@@ -201,9 +205,10 @@ curl -X POST http://127.0.0.1:5000/api/transfers \
 Browser transfers automatically use the signed-in named user for audit attribution. Trusted machine integrations remain token-protected and use the durable service actor by default.
 
 `X-Actor-Email` attribution is disabled by default. A private integration may
-enable `ALLOW_ACTOR_HEADER=true`; the selected actor must belong to the one
-configured workspace. Keep it disabled when machine actions should use the
-durable service actor.
+enable `ALLOW_ACTOR_HEADER=true`; use `X-Workspace: <business-username>` when a
+person belongs to more than one tenant. The actor must have an active membership
+in that exact workspace. Keep attribution disabled when machine actions should
+use the durable service actor.
 
 ### Sales-order fulfilment contract
 
@@ -262,9 +267,9 @@ curl -X POST http://127.0.0.1:5000/api/products/import \
   -F 'file=@examples/products-import.csv'
 ```
 
-### Sprint 1–8 database migrations
+### Sprint 1–9 database migrations
 
-`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprint 1 renames the legacy `quantity` field to `quantity_on_hand`, adds `quantity_reserved`, and backfills product fields. Sprint 2 adds workspaces/users for durable audit identity, location state, bins, bin-aware stock positions, transfer records, and user/bin fields on movements. It also replaces the legacy product/location uniqueness rule without deleting existing balances. Sprint 3 activates the durable user records as named accounts, normalizes legacy roles, and preserves every existing movement/user foreign key. Sprint 4 adds sales orders, order items, and exact stock-level allocations for the reserved-to-shipped outbound lifecycle. Sprint 5 migrates legacy supplier email/phone fields into workspace-scoped supplier records, preserves existing supplier/product links, and adds alert-delivery audit records. Sprint 6 backfills stored forecast factors and adds RMA headers, lines, partial receipts, dispositions, actors, and append-only workflow events. Sprint 7 formalizes the single-workspace invariant, adds collision-safe stock-position uniqueness, and indexes latest forecast lookups. Sprint 8 scopes catalogue and integration identifiers by workspace and adds conversions, purchase orders/receipts, expiry-aware lots, forecast outcomes, and assistant history.
+`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprints 1–6 build the authoritative stock, location/bin, named-user, fulfilment, supplier/reporting, and RMA foundations. Sprint 7 hardened the original single-workspace release. Sprint 8 scopes catalogue identifiers and adds conversions, purchase orders/receipts, expiry-aware lots, forecast outcomes, and assistant history. Sprint 9 safely evolves existing users into per-workspace memberships, assigns unique business usernames, creates tenant settings and integration records, and adds durable verification/reset/invitation, login-throttle, MFA, and recovery-code tables. Existing home-workspace roles and records are backfilled without deleting stock or audit history.
 
 Recorded revisions:
 
@@ -276,6 +281,7 @@ Recorded revisions:
 - `20260806_sprint6_picker_explainability_returns`
 - `20260808_single_workspace_hardening`
 - `20260808_procurement_lots_intelligence`
+- `20260809_saas_identity_workspaces`
 
 Run `flask --app run schema-version` to inspect the applied revisions.
 
@@ -294,9 +300,13 @@ DATABASE_URL=mysql+pymysql://inventory_admin:YOUR_PASSWORD@YOUR_RDS_ENDPOINT:330
 SECRET_KEY=replace-with-at-least-32-random-characters
 POS_WEBHOOK_TOKEN=replace-with-at-least-32-random-characters
 INTERNAL_API_TOKEN=replace-with-at-least-32-random-characters
-ALLOW_WEB_SIGNUP=false
+ALLOW_WEB_SIGNUP=true
 ALLOW_ACTOR_HEADER=false
 SESSION_COOKIE_SECURE=true
+REQUIRE_EMAIL_VERIFICATION=true
+AUTH_EMAIL_ENABLED=true
+MFA_ENCRYPTION_KEY=replace-with-a-valid-fernet-key
+OIDC_ENABLED=true
 TRUST_PROXY_HEADERS=true
 TRUSTED_HOSTS=inventory.example.com
 CRITICAL_STOCKOUT_DAYS=3
@@ -312,7 +322,7 @@ SES_FROM_EMAIL=verified-sender@yourdomain.com
 ALERT_RECIPIENTS=owner@yourdomain.com
 ```
 
-Set `STAFF_AUTH_ENABLED=true`, leave `STAFF_USERNAME` and `STAFF_PASSWORD` blank on a new installation, and set `SESSION_COOKIE_SECURE=true` when HTTPS is configured. Before opening the service publicly, create the first administrator with `flask --app run create-admin`. The `/signup` flow is intended only for controlled development or first-run environments where `ALLOW_WEB_SIGNUP=true`; it stays disabled in production. Existing installations that still define the former shared username/password migrate those credentials once into the durable Admin user. Browser forms use session-backed CSRF tokens, passwords are stored only as Werkzeug hashes, and private read APIs require either a user session or the internal machine token. Use Secrets Manager or Parameter Store in a mature deployment.
+Set `STAFF_AUTH_ENABLED=true`, leave `STAFF_USERNAME` and `STAFF_PASSWORD` blank on a new installation, and keep secure cookies enabled behind HTTPS. For a private installation, set `ALLOW_WEB_SIGNUP=false` and create the first administrator with `flask --app run create-admin`. For SaaS onboarding, set `ALLOW_WEB_SIGNUP=true`, `REQUIRE_EMAIL_VERIFICATION=true`, and configure SES/auth email; unsafe combinations are rejected at startup. Generate a separate Fernet `MFA_ENCRYPTION_KEY`. OIDC client secrets are never stored in the database: workspace settings hold only an environment-variable name such as `OIDC_SECRET_FRESHMART`. Existing shared credentials migrate once into the durable Admin identity. Browser forms use session-backed CSRF tokens, passwords are Werkzeug hashes, auth links are hashed and single-use, and private APIs require a user session or internal machine token. Use Secrets Manager or Parameter Store for production values.
 
 ### 2. Create and secure EC2
 
@@ -331,8 +341,9 @@ sudo ./scripts/bootstrap-ec2.sh /path/to/ai-inventory-tracker
 
 On its first run the script creates `/etc/ai-inventory-tracker.env` and stops.
 Fill that file with the production values above and rerun the script. It refuses
-to start the service with placeholder secrets, SQLite, insecure cookies, an
-open signup page, or missing trusted hosts.
+to start the service with placeholder secrets, SQLite, insecure cookies, or
+missing trusted hosts. Application startup separately validates email-verification
+and MFA requirements.
 
 The script installs Gunicorn + Nginx, creates a non-login service user, prepares `/etc/ai-inventory-tracker.env`, and registers `/usr/local/bin/run-inventory-analysis` for SSM.
 
@@ -396,5 +407,5 @@ examples/            Sample product CSV import file
 infra/               EC2 IAM policy and Scheduler → Lambda → SSM template
 scripts/             EC2 bootstrap and scheduled-job wrapper
 deploy/              Gunicorn systemd unit and Nginx reverse-proxy config
-tests/               60 regression tests across Sprints 1–8, including migrations, CRUD, auth, procurement, partial receipts, conversions, lots/expiry, forecast accuracy, grounded chat, workspace scoping, transfers, fulfilment, reports, mobile picker, and RMAs
+tests/               67 regression tests across Sprints 1–9, including migrations, SaaS workspaces, auth tokens/MFA, cursor isolation, CRUD, procurement, receipts, conversions, lots/expiry, forecast accuracy, grounded chat, transfers, fulfilment, reports, mobile picker, and RMAs
 ```

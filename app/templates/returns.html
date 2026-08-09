@@ -7,6 +7,7 @@
 <section class="hero-row">
   <p class="subhead">Authorize customer returns, receive them by disposition, and restore only saleable stock.</p>
   <form method="get" class="inline-actions return-filter">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search RMA or reason" aria-label="Search returns">
     <select name="status" aria-label="Filter returns by status">
       <option value="">All statuses</option>
       {% for status in ['requested', 'authorized', 'receiving', 'completed', 'rejected', 'cancelled'] %}
@@ -14,11 +15,12 @@
       {% endfor %}
     </select>
     <button class="button secondary" type="submit">Filter</button>
+    {% if q or selected_status %}<a class="text-link" href="{{ url_for('web.returns_page') }}">Clear</a>{% endif %}
   </form>
 </section>
 
 <section class="panel table-panel">
-  <div class="panel-header"><div><p class="eyebrow">RETURN REGISTER</p><h2>Authorized and historical returns</h2></div><span class="mini-badge">{{ returns|length }} shown</span></div>
+  <div class="panel-header"><div><p class="eyebrow">RETURN REGISTER</p><h2>Authorized and historical returns</h2></div><span class="mini-badge">{{ pagination.total }} total</span></div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>RMA</th><th>Sales order</th><th>Reason</th><th>Requested by</th><th>Status</th><th>Created</th><th></th></tr></thead>
@@ -39,5 +41,6 @@
       </tbody>
     </table>
   </div>
+  {% include "_pagination.html" %}
 </section>
 {% endblock %}

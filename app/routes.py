@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import secrets
-import time
+import re
+from html import escape
 from datetime import timedelta
 from functools import wraps
 from io import BytesIO
@@ -23,23 +24,31 @@ from flask import (
     session,
     url_for,
 )
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import selectinload
+from itsdangerous import BadSignature, URLSafeSerializer
 
 from app import db
 from app.models import (
     AlertDelivery,
+    AuthToken,
     Bin,
     InventoryLocation,
     InventoryMovement,
+    MFARecoveryCode,
     Product,
     PurchaseOrder,
+    PurchaseOrderItem,
     ReturnAuthorization,
     SalesOrder,
     StockLevel,
     StockTransfer,
     Supplier,
     User,
+    Workspace,
+    WorkspaceIntegration,
+    WorkspaceMembership,
+    WorkspaceSetting,
     utcnow,
 )
 from app.services.forecast import ForecastService, latest_insights, serialize_insight
@@ -62,7 +71,22 @@ from app.services.inventory import (
     UnknownInventoryReferenceError,
     serialize_sale,
 )
-from app.services.identity import ensure_default_identity, resolve_actor
+from app.services.identity import (
+    activate_workspace_context,
+    ensure_default_identity,
+    memberships_for,
+    normalize_business_username,
+    resolve_actor,
+)
+from app.services.saas_auth import (
+    AuthMailer,
+    AuthTokenService,
+    LoginThrottle,
+    MFAService,
+    WorkspaceService,
+    WorkspaceValidationError,
+    oidc_secret,
+)
 from app.services.locations import (
     BinService,
     LocationService,
@@ -144,6 +168,14 @@ def _session_user() -> User | None:
     if actor is None or not actor.is_active:
         session.clear()
         return None
+    try:
+        membership = activate_workspace_context(
+            actor, session.get("active_workspace_id")
+        )
+    except RuntimeError:
+        session.clear()
+        return None
+    session["active_workspace_id"] = membership.workspace_id
     return actor
 
 
@@ -152,7 +184,9 @@ def _current_actor() -> User:
     if actor:
         return actor
     try:
-        return resolve_actor(request.headers.get("X-Actor-Email"))
+        return resolve_actor(
+            request.headers.get("X-Actor-Email"), request.headers.get("X-Workspace")
+        )
     except ValueError as error:
         abort(403, description=str(error))
     except RuntimeError as error:
@@ -175,26 +209,92 @@ def _safe_next_target(value: str) -> str | None:
     return value
 
 
+def _page_size() -> int:
+    raw_value = request.args.get("limit", "").strip()
+    if not raw_value:
+        return current_app.config["DEFAULT_PAGE_SIZE"]
+    try:
+        value = int(raw_value)
+    except ValueError:
+        abort(400, description="limit must be an integer")
+    if value < 1 or value > current_app.config["MAX_PAGE_SIZE"]:
+        abort(
+            400,
+            description=(
+                f"limit must be between 1 and "
+                f"{current_app.config['MAX_PAGE_SIZE']}"
+            ),
+        )
+    return value
+
+
+def _cursor_serializer() -> URLSafeSerializer:
+    return URLSafeSerializer(current_app.config["SECRET_KEY"], salt="stockpilot-page-v1")
+
+
+def _decode_cursor(kind: str, workspace_id: int) -> int | None:
+    encoded = request.args.get("cursor", "").strip()
+    if not encoded:
+        return None
+    try:
+        payload = _cursor_serializer().loads(encoded)
+        if (
+            payload.get("kind") != kind
+            or int(payload.get("workspace_id")) != workspace_id
+        ):
+            raise ValueError
+        return int(payload["id"])
+    except (BadSignature, KeyError, TypeError, ValueError):
+        abort(400, description="invalid or expired pagination cursor")
+
+
+def _encode_cursor(kind: str, workspace_id: int, record_id: int) -> str:
+    return _cursor_serializer().dumps(
+        {"kind": kind, "workspace_id": workspace_id, "id": record_id}
+    )
+
+
+def _cursor_page(query, model, *, kind: str, workspace_id: int, descending=False):
+    """Return a stable keyset page and total without exposing tenant identifiers."""
+
+    limit = _page_size()
+    total = query.order_by(None).count()
+    marker = _decode_cursor(kind, workspace_id)
+    if marker is not None:
+        query = query.filter(model.id < marker if descending else model.id > marker)
+    order = model.id.desc() if descending else model.id.asc()
+    rows = query.order_by(order).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = (
+        _encode_cursor(kind, workspace_id, rows[-1].id)
+        if has_more and rows
+        else None
+    )
+    args = request.args.to_dict(flat=True)
+    args.pop("cursor", None)
+    next_url = None
+    if next_cursor:
+        next_url = url_for(request.endpoint, cursor=next_cursor, **args)
+    return rows, {
+        "total": total,
+        "limit": limit,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "next_url": next_url,
+    }
+
+
 def _login_attempt_key(identifier: object) -> str:
-    return f"{request.remote_addr or 'unknown'}:{str(identifier or '').strip().lower()}"
+    return LoginThrottle.key(request.remote_addr, identifier)
 
 
 def _login_is_rate_limited(identifier: object) -> bool:
-    attempts = current_app.extensions.setdefault("stockpilot_login_attempts", {})
-    key = _login_attempt_key(identifier)
-    cutoff = time.monotonic() - current_app.config["LOGIN_WINDOW_SECONDS"]
-    recent = [timestamp for timestamp in attempts.get(key, []) if timestamp >= cutoff]
-    attempts[key] = recent
-    return len(recent) >= current_app.config["LOGIN_MAX_ATTEMPTS"]
+    return LoginThrottle.is_limited(request.remote_addr, identifier)
 
 
 def _record_login_result(identifier: object, *, succeeded: bool) -> None:
-    attempts = current_app.extensions.setdefault("stockpilot_login_attempts", {})
-    key = _login_attempt_key(identifier)
-    if succeeded:
-        attempts.pop(key, None)
-    else:
-        attempts.setdefault(key, []).append(time.monotonic())
+    LoginThrottle.record(request.remote_addr, identifier, succeeded=succeeded)
 
 
 def roles_required(*allowed_roles: str):
@@ -255,12 +355,26 @@ def require_staff_login():
     g.current_user = _session_user()
     if not current_app.config["STAFF_AUTH_ENABLED"]:
         g.current_user = g.current_user or ensure_default_identity()
+        activate_workspace_context(
+            g.current_user, session.get("active_workspace_id")
+        )
         return None
 
     if authentication_setup_required():
         activate_legacy_credentials()
 
-    if request.endpoint in {"web.login", "web.signup"}:
+    public_endpoints = {
+        "web.login",
+        "web.signup",
+        "web.forgot_password",
+        "web.reset_password",
+        "web.verify_email",
+        "web.accept_invitation",
+        "web.mfa_challenge",
+        "web.sso_login",
+        "web.sso_callback",
+    }
+    if request.endpoint in public_endpoints:
         return None
     if g.current_user is None:
         if authentication_setup_required() and not current_app.config["ALLOW_WEB_SIGNUP"]:
@@ -273,6 +387,16 @@ def require_staff_login():
             )
         destination = "web.signup" if authentication_setup_required() else "web.login"
         return redirect(url_for(destination, next=request.path))
+    if (
+        current_app.config.get("REQUIRE_EMAIL_VERIFICATION")
+        and not g.current_user.email_verified_at
+        and request.endpoint not in {
+            "web.verification_pending",
+            "web.resend_verification",
+            "web.logout",
+        }
+    ):
+        return redirect(url_for("web.verification_pending"))
     if request.method == "POST":
         _validate_csrf()
     return None
@@ -291,6 +415,14 @@ def inject_csrf_token():
         "auth_enabled": current_app.config["STAFF_AUTH_ENABLED"],
         "role_labels": ROLE_LABELS,
         "report_currency": current_app.config["REPORT_CURRENCY"],
+        "allow_signup": current_app.config.get("ALLOW_WEB_SIGNUP", False),
+        "current_workspace": getattr(g, "active_workspace", None),
+        "current_membership": getattr(g, "active_membership", None),
+        "workspace_memberships": (
+            memberships_for(g.current_user)
+            if getattr(g, "current_user", None)
+            else []
+        ),
     }
 
 
@@ -497,14 +629,42 @@ def dashboard():
     return render_template("dashboard.html", **data)
 
 
+def _complete_login(actor: User, workspace_id: int | None = None):
+    membership = activate_workspace_context(actor, workspace_id)
+    session.clear()
+    session["user_id"] = actor.id
+    session["active_workspace_id"] = membership.workspace_id
+    session["csrf_token"] = secrets.token_urlsafe(32)
+    session.permanent = True
+
+
+def _send_auth_link(
+    *, recipient: str, subject: str, link: str, explanation: str
+) -> bool:
+    return AuthMailer.send_link(
+        recipient=recipient,
+        subject=subject,
+        text_body=f"{explanation}\n\n{link}\n\nIf you did not request this, ignore this email.",
+        html_body=(
+            f"<p>{escape(explanation)}</p><p><a href=\"{escape(link, quote=True)}\">Continue to StockPilot</a></p>"
+            "<p>If you did not request this, ignore this email.</p>"
+        ),
+    )
+
+
+def _workspace_from_username(value: object) -> Workspace | None:
+    username = normalize_business_username(value)
+    if not username:
+        return None
+    return Workspace.query.filter(func.lower(Workspace.business_username) == username).first()
+
+
 @web_bp.route("/login", methods=["GET", "POST"])
 def login():
     if not current_app.config["STAFF_AUTH_ENABLED"]:
         return redirect(url_for("web.dashboard"))
     if getattr(g, "current_user", None):
         return redirect(url_for("web.dashboard"))
-    if authentication_setup_required():
-        return redirect(url_for("web.signup"))
     if request.method == "POST":
         _validate_csrf()
         identifier = request.form.get(
@@ -515,14 +675,28 @@ def login():
         actor = authenticate(
             identifier,
             request.form.get("password", ""),
+            business_username=request.form.get("business_username"),
         )
         if actor:
             _record_login_result(identifier, succeeded=True)
-            session.clear()
-            session["user_id"] = actor.id
-            session["csrf_token"] = secrets.token_urlsafe(32)
-            session.permanent = True
+            workspace = _workspace_from_username(request.form.get("business_username"))
+            membership = activate_workspace_context(
+                actor, workspace.id if workspace else None
+            )
+            if actor.mfa_enabled_at:
+                session.clear()
+                session["preauth_user_id"] = actor.id
+                session["preauth_workspace_id"] = membership.workspace_id
+                session["csrf_token"] = secrets.token_urlsafe(32)
+                session["mfa_attempts"] = 0
+                return redirect(url_for("web.mfa_challenge"))
+            _complete_login(actor, membership.workspace_id)
             target = request.args.get("next", "")
+            if (
+                current_app.config.get("REQUIRE_EMAIL_VERIFICATION")
+                and not actor.email_verified_at
+            ):
+                return redirect(url_for("web.verification_pending"))
             return redirect(_safe_next_target(target) or url_for("web.dashboard"))
         _record_login_result(identifier, succeeded=False)
         flash("Incorrect email or password.", "error")
@@ -533,21 +707,48 @@ def login():
 def signup():
     if not current_app.config["STAFF_AUTH_ENABLED"]:
         return redirect(url_for("web.dashboard"))
+    if getattr(g, "current_user", None):
+        return redirect(url_for("web.create_workspace_page"))
     if not current_app.config["ALLOW_WEB_SIGNUP"]:
         abort(404)
-    if not authentication_setup_required():
-        return redirect(url_for("web.login"))
     if request.method == "POST":
         _validate_csrf()
         try:
-            actor = UserService.bootstrap_admin(request.form.to_dict())
-            session.clear()
-            session["user_id"] = actor.id
-            session["csrf_token"] = secrets.token_urlsafe(32)
-            session.permanent = True
-            flash("Your administrator account is ready.", "success")
+            payload = request.form.to_dict()
+            if authentication_setup_required():
+                # Modern browser onboarding must supply a complete business and
+                # warehouse identity. The workspace_name-only branch remains
+                # for the legacy setup contract and CLI-created audit actor.
+                if payload.get("business_name") is not None:
+                    placeholder = ensure_default_identity()
+                    WorkspaceService.validate_identity(
+                        payload, existing_workspace=placeholder.workspace
+                    )
+                actor = UserService.bootstrap_admin(payload)
+                workspace = actor.workspace
+            else:
+                workspace, actor = WorkspaceService.create_for_user(payload)
+            raw, _ = AuthTokenService.verification(actor)
+            link = url_for("web.verify_email", token=raw, _external=True)
+            sent = _send_auth_link(
+                recipient=actor.email,
+                subject="Verify your StockPilot email",
+                link=link,
+                explanation=f"Verify your email to finish setting up {workspace.name}.",
+            )
+            _complete_login(actor, workspace.id)
+            if not sent and current_app.config.get("APP_ENV") != "production":
+                flash(f"Development verification link: {link}", "success")
+            flash("Your business workspace and primary warehouse are ready.", "success")
+            if current_app.config.get("REQUIRE_EMAIL_VERIFICATION"):
+                return redirect(url_for("web.verification_pending"))
             return redirect(url_for("web.dashboard"))
-        except (AuthenticationError, UserValidationError) as error:
+        except (
+            AuthenticationError,
+            UserValidationError,
+            WorkspaceValidationError,
+        ) as error:
+            db.session.rollback()
             flash(str(error), "error")
     return render_template("signup.html")
 
@@ -558,22 +759,444 @@ def logout():
     return redirect(url_for("web.login"))
 
 
+@web_bp.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    if request.method == "POST":
+        _validate_csrf()
+        email = str(request.form.get("email") or "").strip().lower()
+        user = User.query.filter_by(email=email, is_active=True).first()
+        if user:
+            raw, _ = AuthTokenService.password_reset(user)
+            link = url_for("web.reset_password", token=raw, _external=True)
+            sent = _send_auth_link(
+                recipient=user.email,
+                subject="Reset your StockPilot password",
+                link=link,
+                explanation="Use this single-use link to reset your StockPilot password.",
+            )
+            if not sent and current_app.config.get("APP_ENV") != "production":
+                flash(f"Development reset link: {link}", "success")
+        flash("If that account exists, a password-reset link has been sent.", "success")
+        return redirect(url_for("web.login"))
+    return render_template("forgot_password.html")
+
+
+@web_bp.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password(token: str):
+    record = AuthTokenService.resolve(token, "password_reset")
+    if record is None or record.user is None:
+        return render_template("auth_token_invalid.html", purpose="password reset"), 400
+    if request.method == "POST":
+        _validate_csrf()
+        password = str(request.form.get("password") or "")
+        confirmation = str(request.form.get("password_confirm") or "")
+        if len(password) < 10 or len(password) > 128:
+            flash("Password must be between 10 and 128 characters.", "error")
+        elif password != confirmation:
+            flash("Password confirmation does not match.", "error")
+        else:
+            record.user.set_password(password)
+            now = utcnow()
+            for active in AuthToken.query.filter_by(
+                user_id=record.user_id, purpose="password_reset", consumed_at=None
+            ).all():
+                active.consumed_at = now
+            db.session.commit()
+            flash("Your password has been reset. Sign in with the new password.", "success")
+            return redirect(url_for("web.login"))
+    return render_template("reset_password.html", token=token)
+
+
+@web_bp.get("/verify-email/<token>")
+def verify_email(token: str):
+    record = AuthTokenService.resolve(token, "email_verification")
+    if record is None or record.user is None:
+        return render_template("auth_token_invalid.html", purpose="verification"), 400
+    record.user.email_verified_at = utcnow()
+    record.consumed_at = utcnow()
+    db.session.commit()
+    flash("Email verified. Your account is fully active.", "success")
+    return redirect(url_for("web.dashboard") if _session_user() else url_for("web.login"))
+
+
+@web_bp.get("/verification-pending")
+def verification_pending():
+    actor = _session_user()
+    if actor is None:
+        return redirect(url_for("web.login"))
+    if actor.email_verified_at:
+        return redirect(url_for("web.dashboard"))
+    return render_template("verification_pending.html")
+
+
+@web_bp.post("/verification/resend")
+def resend_verification():
+    actor = _current_actor()
+    raw, _ = AuthTokenService.verification(actor)
+    link = url_for("web.verify_email", token=raw, _external=True)
+    sent = _send_auth_link(
+        recipient=actor.email,
+        subject="Verify your StockPilot email",
+        link=link,
+        explanation="Verify your email to continue using StockPilot.",
+    )
+    if not sent and current_app.config.get("APP_ENV") != "production":
+        flash(f"Development verification link: {link}", "success")
+    flash("A fresh verification link has been issued.", "success")
+    return redirect(url_for("web.verification_pending"))
+
+
+@web_bp.route("/mfa/challenge", methods=["GET", "POST"])
+def mfa_challenge():
+    user = db.session.get(User, session.get("preauth_user_id"))
+    if user is None or not user.is_active or not user.mfa_enabled_at:
+        session.clear()
+        return redirect(url_for("web.login"))
+    if request.method == "POST":
+        _validate_csrf()
+        session["mfa_attempts"] = int(session.get("mfa_attempts", 0)) + 1
+        if session["mfa_attempts"] > 8:
+            session.clear()
+            abort(429, description="too many MFA attempts; sign in again")
+        if MFAService.verify(user, request.form.get("code")):
+            workspace_id = session.get("preauth_workspace_id")
+            _complete_login(user, workspace_id)
+            return redirect(url_for("web.dashboard"))
+        flash("That authenticator or recovery code is incorrect.", "error")
+    return render_template("mfa_challenge.html")
+
+
+@web_bp.route("/security", methods=["GET", "POST"])
+def security_page():
+    actor = _current_actor()
+    recovery_codes = session.pop("new_recovery_codes", None)
+    if request.method == "POST":
+        action = request.form.get("action")
+        if action == "enable_mfa":
+            secret = MFAService.decrypt(actor)
+            try:
+                recovery_codes = MFAService.enable(actor, secret, request.form.get("code"))
+                session["new_recovery_codes"] = recovery_codes
+                flash("Multi-factor authentication is enabled.", "success")
+                return redirect(url_for("web.security_page"))
+            except ValueError as error:
+                flash(str(error), "error")
+        elif action == "disable_mfa":
+            if not actor.check_password(str(request.form.get("password") or "")):
+                flash("Password is incorrect.", "error")
+            elif not MFAService.verify(actor, request.form.get("code")):
+                flash("Authenticator or recovery code is incorrect.", "error")
+            else:
+                actor.mfa_secret_encrypted = None
+                actor.mfa_enabled_at = None
+                MFARecoveryCode.query.filter_by(user_id=actor.id).delete()
+                db.session.commit()
+                flash("Multi-factor authentication has been disabled.", "success")
+                return redirect(url_for("web.security_page"))
+    if not actor.mfa_enabled_at and not actor.mfa_secret_encrypted:
+        actor.mfa_secret_encrypted = MFAService.encrypt(MFAService.generate_secret())
+        db.session.commit()
+    secret = MFAService.decrypt(actor) if not actor.mfa_enabled_at else None
+    return render_template(
+        "security.html",
+        secret=secret,
+        provisioning_uri=(MFAService.provisioning_uri(actor, secret) if secret else None),
+        recovery_codes=recovery_codes,
+    )
+
+
+@web_bp.route("/workspaces/new", methods=["GET", "POST"])
+def create_workspace_page():
+    actor = _current_actor()
+    if request.method == "POST":
+        try:
+            workspace, _ = WorkspaceService.create_for_user(
+                request.form.to_dict(), user=actor
+            )
+            _complete_login(actor, workspace.id)
+            flash(f"{workspace.name} is ready with its first warehouse.", "success")
+            return redirect(url_for("web.dashboard"))
+        except WorkspaceValidationError as error:
+            db.session.rollback()
+            flash(str(error), "error")
+    return render_template("workspace_new.html")
+
+
+@web_bp.post("/workspaces/<int:workspace_id>/switch")
+def switch_workspace(workspace_id: int):
+    actor = _current_actor()
+    membership = WorkspaceService.membership(actor, workspace_id)
+    if membership is None:
+        abort(404)
+    session["active_workspace_id"] = membership.workspace_id
+    activate_workspace_context(actor, membership.workspace_id)
+    membership.last_accessed_at = utcnow()
+    db.session.commit()
+    flash(f"Switched to {membership.workspace.name}.", "success")
+    target = _safe_next_target(request.form.get("next", ""))
+    return redirect(target or url_for("web.dashboard"))
+
+
+@web_bp.route("/workspace/settings", methods=["GET", "POST"])
+@roles_required("admin")
+def workspace_settings_page():
+    actor = _current_actor()
+    workspace = g.active_workspace
+    settings = workspace.settings or WorkspaceSetting(workspace=workspace)
+    integration = WorkspaceIntegration.query.filter_by(
+        workspace_id=workspace.id, provider="oidc", name="default"
+    ).first()
+    if request.method == "POST":
+        name = str(request.form.get("business_name") or "").strip()
+        username = normalize_business_username(request.form.get("business_username"))
+        if not name or len(name) > 255:
+            flash("Business name is required and must be 255 characters or fewer.", "error")
+        elif len(username) < 3:
+            flash("Business username must be at least 3 characters.", "error")
+        elif Workspace.query.filter(
+            func.lower(Workspace.business_username) == username,
+            Workspace.id != workspace.id,
+        ).first():
+            flash("That business username is already in use.", "error")
+        else:
+            workspace.name = name
+            workspace.business_username = username
+            settings.timezone = str(request.form.get("timezone") or "Asia/Kolkata")[:64]
+            settings.currency = str(request.form.get("currency") or "INR").upper()[:3]
+            db.session.add(settings)
+            issuer = str(request.form.get("oidc_issuer") or "").strip().rstrip("/")
+            client_id = str(request.form.get("oidc_client_id") or "").strip()
+            if issuer or client_id:
+                integration = integration or WorkspaceIntegration(
+                    workspace=workspace, provider="oidc", name="default"
+                )
+                integration.config_json = {
+                    "issuer": issuer,
+                    "client_id": client_id,
+                    "auto_provision": "oidc_auto_provision" in request.form,
+                    "default_role": request.form.get("oidc_default_role", "picker"),
+                }
+                integration.secret_reference = str(
+                    request.form.get("oidc_secret_reference") or ""
+                ).strip()[:255]
+                integration.is_active = "oidc_enabled" in request.form
+                db.session.add(integration)
+            elif integration:
+                integration.is_active = False
+            db.session.commit()
+            flash("Workspace settings were updated.", "success")
+            return redirect(url_for("web.workspace_settings_page"))
+    return render_template(
+        "workspace_settings.html",
+        workspace=workspace,
+        settings=settings,
+        integration=integration,
+    )
+
+
+@web_bp.post("/workspace/invitations")
+@roles_required("admin")
+def invite_workspace_user():
+    actor = _current_actor()
+    try:
+        raw, invitation = WorkspaceService.invite(
+            workspace=g.active_workspace,
+            acting_user=actor,
+            email=request.form.get("email"),
+            role=request.form.get("role"),
+        )
+        link = url_for("web.accept_invitation", token=raw, _external=True)
+        sent = _send_auth_link(
+            recipient=invitation.email,
+            subject=f"You’re invited to {g.active_workspace.name} on StockPilot",
+            link=link,
+            explanation=(
+                f"An administrator invited you as "
+                f"{invitation.payload_json.get('role', 'picker').title()}."
+            ),
+        )
+        if not sent and current_app.config.get("APP_ENV") != "production":
+            flash(f"Development invitation link: {link}", "success")
+        flash(f"Invitation issued to {invitation.email}.", "success")
+    except WorkspaceValidationError as error:
+        flash(str(error), "error")
+    return redirect(url_for("web.users_page"))
+
+
+@web_bp.route("/invitations/<token>", methods=["GET", "POST"])
+def accept_invitation(token: str):
+    record = AuthTokenService.resolve(token, "invitation")
+    if record is None or record.workspace is None:
+        return render_template("auth_token_invalid.html", purpose="invitation"), 400
+    actor = _session_user()
+    if request.method == "POST":
+        _validate_csrf()
+        try:
+            user = WorkspaceService.accept_invitation(
+                record, request.form.to_dict(), current_user=actor
+            )
+            _complete_login(user, record.workspace_id)
+            flash(f"You now have access to {record.workspace.name}.", "success")
+            return redirect(url_for("web.dashboard"))
+        except (WorkspaceValidationError, UserValidationError) as error:
+            flash(str(error), "error")
+    return render_template("accept_invitation.html", invitation=record, token=token, actor=actor)
+
+
+def _oidc_client(workspace: Workspace, integration: WorkspaceIntegration):
+    try:
+        from authlib.integrations.flask_client import OAuth
+    except ImportError as error:
+        raise RuntimeError("Authlib must be installed to use SSO") from error
+    config = integration.config_json or {}
+    issuer = str(config.get("issuer") or "").rstrip("/")
+    client_id = str(config.get("client_id") or "")
+    client_secret = oidc_secret(integration)
+    if not issuer or not client_id or not client_secret:
+        raise RuntimeError("SSO issuer, client ID, or secret reference is incomplete")
+    oauth = current_app.extensions.get("stockpilot_oauth")
+    if oauth is None:
+        oauth = OAuth(current_app)
+        current_app.extensions["stockpilot_oauth"] = oauth
+    name = f"workspace_{workspace.id}"
+    client = oauth.create_client(name)
+    if client is None:
+        client = oauth.register(
+            name=name,
+            client_id=client_id,
+            client_secret=client_secret,
+            server_metadata_url=f"{issuer}/.well-known/openid-configuration",
+            client_kwargs={"scope": "openid email profile"},
+        )
+    return client
+
+
+@web_bp.get("/auth/sso/<business_username>")
+def sso_login(business_username: str):
+    if not current_app.config.get("OIDC_ENABLED"):
+        abort(404)
+    workspace = _workspace_from_username(business_username)
+    integration = (
+        WorkspaceIntegration.query.filter_by(
+            workspace_id=workspace.id if workspace else -1,
+            provider="oidc",
+            name="default",
+            is_active=True,
+        ).first()
+    )
+    if workspace is None or integration is None:
+        flash("SSO is not configured for that business.", "error")
+        return redirect(url_for("web.login"))
+    try:
+        client = _oidc_client(workspace, integration)
+        session["sso_workspace_id"] = workspace.id
+        return client.authorize_redirect(url_for("web.sso_callback", _external=True))
+    except RuntimeError as error:
+        current_app.logger.warning("SSO initiation failed: %s", error)
+        flash("SSO is temporarily unavailable for this business.", "error")
+        return redirect(url_for("web.login"))
+
+
+@web_bp.get("/auth/sso/callback")
+def sso_callback():
+    workspace = db.session.get(Workspace, session.get("sso_workspace_id"))
+    integration = WorkspaceIntegration.query.filter_by(
+        workspace_id=workspace.id if workspace else -1,
+        provider="oidc",
+        name="default",
+        is_active=True,
+    ).first()
+    if workspace is None or integration is None:
+        abort(400, description="SSO session expired")
+    try:
+        client = _oidc_client(workspace, integration)
+        token = client.authorize_access_token()
+        userinfo = token.get("userinfo") or client.userinfo(token=token)
+    except Exception as error:
+        current_app.logger.warning("SSO callback failed: %s", error)
+        flash("SSO sign-in could not be completed.", "error")
+        return redirect(url_for("web.login"))
+    email = str(userinfo.get("email") or "").strip().lower()
+    if not email or userinfo.get("email_verified") is False:
+        abort(403, description="SSO provider did not return a verified email")
+    user = User.query.filter_by(email=email).first()
+    membership = (
+        WorkspaceMembership.query.filter_by(
+            workspace_id=workspace.id, user_id=user.id, is_active=True
+        ).first()
+        if user
+        else None
+    )
+    config = integration.config_json or {}
+    if membership is None and config.get("auto_provision"):
+        if user is None:
+            user = User(
+                workspace=workspace,
+                name=str(userinfo.get("name") or email.split("@")[0])[:255],
+                email=email,
+                role=str(config.get("default_role") or "picker"),
+                is_active=True,
+                email_verified_at=utcnow(),
+            )
+            db.session.add(user)
+            db.session.flush()
+        membership = WorkspaceMembership(
+            workspace=workspace,
+            user=user,
+            role=str(config.get("default_role") or "picker"),
+            is_active=True,
+        )
+        db.session.add(membership)
+        db.session.commit()
+    if user is None or membership is None:
+        abort(403, description="This SSO account has not been invited")
+    _complete_login(user, workspace.id)
+    return redirect(url_for("web.dashboard"))
+
+
 @web_bp.route("/users", methods=["GET", "POST"])
 @roles_required("admin")
 def users_page():
     actor = _current_actor()
     if request.method == "POST":
         try:
-            user = UserService.create(request.form.to_dict(), workspace=actor.workspace)
+            user = UserService.create(
+                request.form.to_dict(), workspace=g.active_workspace
+            )
             flash(f"{user.name} was added as {ROLE_LABELS[user.role]}.", "success")
             return redirect(url_for("web.users_page"))
         except UserValidationError as error:
             flash(str(error), "error")
+    membership_query = (
+        WorkspaceMembership.query.filter_by(workspace_id=actor.workspace_id)
+        .join(User)
+        .options(selectinload(WorkspaceMembership.user))
+    )
+    q = request.args.get("q", "").strip()
+    role = request.args.get("role", "").strip().lower()
+    if q:
+        membership_query = membership_query.filter(
+            or_(User.name.ilike(f"%{q}%"), User.email.ilike(f"%{q}%"))
+        )
+    if role in ROLES:
+        membership_query = membership_query.filter(WorkspaceMembership.role == role)
+    memberships, pagination = _cursor_page(
+        membership_query,
+        WorkspaceMembership,
+        kind="memberships",
+        workspace_id=actor.workspace_id,
+    )
     return render_template(
         "users.html",
-        users=User.query.filter_by(workspace_id=actor.workspace_id)
-        .order_by(User.name)
-        .all(),
+        memberships=memberships,
+        pagination=pagination,
+        q=q,
+        role_filter=role,
+        invitations=AuthToken.query.filter_by(
+            workspace_id=actor.workspace_id,
+            purpose="invitation",
+            consumed_at=None,
+        ).order_by(AuthToken.created_at.desc()).limit(20).all(),
         roles=ROLE_LABELS,
     )
 
@@ -583,7 +1206,10 @@ def users_page():
 def edit_user_form(user_id: int):
     actor = _current_actor()
     user = db.get_or_404(User, user_id)
-    if user.workspace_id != actor.workspace_id:
+    membership = WorkspaceMembership.query.filter_by(
+        user_id=user.id, workspace_id=actor.workspace_id
+    ).first()
+    if membership is None:
         abort(404)
     if request.method == "POST":
         payload = request.form.to_dict()
@@ -594,7 +1220,9 @@ def edit_user_form(user_id: int):
             return redirect(url_for("web.users_page"))
         except UserValidationError as error:
             flash(str(error), "error")
-    return render_template("user_form.html", user=user, roles=ROLE_LABELS)
+    return render_template(
+        "user_form.html", user=user, membership=membership, roles=ROLE_LABELS
+    )
 
 
 @web_bp.get("/scanner")
@@ -626,12 +1254,30 @@ def products_page():
         "true",
         "yes",
     }
-    query = Product.query.filter_by(workspace_id=actor.workspace_id)
+    query = Product.query.filter_by(workspace_id=actor.workspace_id).options(
+        selectinload(Product.stock_levels).selectinload(StockLevel.location),
+        selectinload(Product.preferred_supplier),
+    )
     if not include_archived:
         query = query.filter_by(is_active=True)
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.filter(
+            or_(
+                Product.name.ilike(f"%{q}%"),
+                Product.sku.ilike(f"%{q}%"),
+                Product.barcode.ilike(f"%{q}%"),
+                Product.category.ilike(f"%{q}%"),
+            )
+        )
+    products, pagination = _cursor_page(
+        query, Product, kind="products", workspace_id=actor.workspace_id
+    )
     return render_template(
         "products.html",
-        products=query.order_by(Product.name).all(),
+        products=products,
+        pagination=pagination,
+        q=q,
         include_archived=include_archived,
     )
 
@@ -640,25 +1286,28 @@ def products_page():
 @roles_required("admin", "manager")
 def manage_page():
     actor = _current_actor()
+    catalogue_limit = current_app.config["MAX_PAGE_SIZE"]
     return render_template(
         "manage.html",
         products=Product.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
-        ).order_by(Product.name).all(),
+        ).order_by(Product.name).limit(catalogue_limit).all(),
         suppliers=Supplier.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
         )
         .order_by(Supplier.name)
+        .limit(catalogue_limit)
         .all(),
         locations=InventoryLocation.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
         )
         .order_by(InventoryLocation.name)
+        .limit(catalogue_limit)
         .all(),
         bins=Bin.query.join(InventoryLocation).filter(
             InventoryLocation.workspace_id == actor.workspace_id,
             Bin.is_active.is_(True),
-        ).order_by(Bin.code).all(),
+        ).order_by(Bin.code).limit(catalogue_limit).all(),
     )
 
 
@@ -687,12 +1336,28 @@ def suppliers_page():
         "true",
         "yes",
     }
-    query = Supplier.query.filter_by(workspace_id=actor.workspace_id)
+    query = Supplier.query.filter_by(workspace_id=actor.workspace_id).options(
+        selectinload(Supplier.products)
+    )
     if not include_inactive:
         query = query.filter_by(is_active=True)
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.filter(
+            or_(
+                Supplier.name.ilike(f"%{q}%"),
+                Supplier.contact_email.ilike(f"%{q}%"),
+                Supplier.contact_phone.ilike(f"%{q}%"),
+            )
+        )
+    suppliers, pagination = _cursor_page(
+        query, Supplier, kind="suppliers", workspace_id=actor.workspace_id
+    )
     return render_template(
         "suppliers.html",
-        suppliers=query.order_by(Supplier.name).all(),
+        suppliers=suppliers,
+        pagination=pagination,
+        q=q,
         include_inactive=include_inactive,
     )
 
@@ -750,11 +1415,33 @@ def add_location_form():
 @web_bp.get("/locations")
 def locations_page():
     actor = _current_actor()
+    query = InventoryLocation.query.filter_by(
+        workspace_id=actor.workspace_id
+    ).options(selectinload(InventoryLocation.bins))
+    q = request.args.get("q", "").strip()
+    state = request.args.get("state", "all").strip().lower()
+    if q:
+        query = query.filter(
+            or_(
+                InventoryLocation.name.ilike(f"%{q}%"),
+                InventoryLocation.code.ilike(f"%{q}%"),
+                InventoryLocation.address.ilike(f"%{q}%"),
+            )
+        )
+    if state in {"active", "inactive"}:
+        query = query.filter_by(is_active=state == "active")
+    locations, pagination = _cursor_page(
+        query,
+        InventoryLocation,
+        kind="locations",
+        workspace_id=actor.workspace_id,
+    )
     return render_template(
         "locations.html",
-        locations=InventoryLocation.query.filter_by(
-            workspace_id=actor.workspace_id
-        ).order_by(InventoryLocation.name).all(),
+        locations=locations,
+        pagination=pagination,
+        q=q,
+        state_filter=state,
     )
 
 
@@ -842,6 +1529,7 @@ def edit_product_form(product_id: int):
             workspace_id=_current_actor().workspace_id, is_active=True
         )
         .order_by(Supplier.name)
+        .limit(current_app.config["MAX_PAGE_SIZE"])
         .all(),
     )
 
@@ -927,18 +1615,45 @@ def adjust_stock_form():
 @web_bp.get("/transfers")
 def transfers_page():
     actor = _current_actor()
+    query = StockTransfer.query.filter_by(workspace_id=actor.workspace_id).options(
+        selectinload(StockTransfer.product),
+        selectinload(StockTransfer.source_location),
+        selectinload(StockTransfer.destination_location),
+        selectinload(StockTransfer.source_bin),
+        selectinload(StockTransfer.destination_bin),
+        selectinload(StockTransfer.user),
+    )
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.join(Product).filter(
+            or_(
+                Product.name.ilike(f"%{q}%"),
+                Product.sku.ilike(f"%{q}%"),
+                StockTransfer.transfer_uid.ilike(f"%{q}%"),
+                StockTransfer.external_id.ilike(f"%{q}%"),
+            )
+        )
+    transfers, pagination = _cursor_page(
+        query,
+        StockTransfer,
+        kind="transfers",
+        workspace_id=actor.workspace_id,
+        descending=True,
+    )
     return render_template(
         "transfers.html",
         products=Product.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
-        ).order_by(Product.name).all(),
+        ).order_by(Product.name).limit(current_app.config["MAX_PAGE_SIZE"]).all(),
         locations=InventoryLocation.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
         )
         .order_by(InventoryLocation.name)
+        .limit(current_app.config["MAX_PAGE_SIZE"])
         .all(),
-        transfers=StockTransfer.query.filter_by(workspace_id=actor.workspace_id)
-        .order_by(StockTransfer.created_at.desc()).limit(50).all(),
+        transfers=transfers,
+        pagination=pagination,
+        q=q,
         transfer_request_id=str(uuid4()),
         selected_sku=request.args.get("sku", "").strip().upper(),
     )
@@ -971,19 +1686,44 @@ def create_transfer_form():
 @web_bp.get("/orders")
 def orders_page():
     actor = _current_actor()
+    query = SalesOrder.query.filter_by(workspace_id=actor.workspace_id).options(
+        selectinload(SalesOrder.items),
+        selectinload(SalesOrder.location),
+        selectinload(SalesOrder.created_by),
+    )
+    q = request.args.get("q", "").strip()
+    status = request.args.get("status", "").strip().lower()
+    if q:
+        query = query.filter(
+            or_(
+                SalesOrder.customer_reference.ilike(f"%{q}%"),
+                SalesOrder.order_uid.ilike(f"%{q}%"),
+                SalesOrder.external_id.ilike(f"%{q}%"),
+            )
+        )
+    if status in {"pending", "picking", "packed", "shipped", "cancelled"}:
+        query = query.filter_by(status=status)
+    orders, pagination = _cursor_page(
+        query,
+        SalesOrder,
+        kind="sales-orders",
+        workspace_id=actor.workspace_id,
+        descending=True,
+    )
     return render_template(
         "orders.html",
-        orders=SalesOrder.query.filter_by(workspace_id=actor.workspace_id)
-        .order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc())
-        .limit(100)
-        .all(),
+        orders=orders,
+        pagination=pagination,
+        q=q,
+        status_filter=status,
         products=Product.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
-        ).order_by(Product.name).all(),
+        ).order_by(Product.name).limit(current_app.config["MAX_PAGE_SIZE"]).all(),
         locations=InventoryLocation.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
         )
         .order_by(InventoryLocation.name)
+        .limit(current_app.config["MAX_PAGE_SIZE"])
         .all(),
         order_request_id=str(uuid4()),
     )
@@ -1127,16 +1867,35 @@ def returns_page():
         "rejected",
         "cancelled",
     }
-    query = ReturnAuthorization.query.filter_by(workspace_id=actor.workspace_id)
+    query = ReturnAuthorization.query.filter_by(
+        workspace_id=actor.workspace_id
+    ).options(
+        selectinload(ReturnAuthorization.sales_order),
+        selectinload(ReturnAuthorization.created_by),
+    )
     if status in allowed_statuses:
         query = query.filter_by(status=status)
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.filter(
+            or_(
+                ReturnAuthorization.rma_uid.ilike(f"%{q}%"),
+                ReturnAuthorization.external_id.ilike(f"%{q}%"),
+                ReturnAuthorization.reason_code.ilike(f"%{q}%"),
+            )
+        )
+    returns, pagination = _cursor_page(
+        query,
+        ReturnAuthorization,
+        kind="returns",
+        workspace_id=actor.workspace_id,
+        descending=True,
+    )
     return render_template(
         "returns.html",
-        returns=query.order_by(
-            ReturnAuthorization.created_at.desc(), ReturnAuthorization.id.desc()
-        )
-        .limit(100)
-        .all(),
+        returns=returns,
+        pagination=pagination,
+        q=q,
         selected_status=status if status in allowed_statuses else "",
     )
 
@@ -1186,6 +1945,7 @@ def return_detail_page(return_id: int):
             workspace_id=actor.workspace_id, is_active=True
         )
         .order_by(InventoryLocation.name)
+        .limit(current_app.config["MAX_PAGE_SIZE"])
         .all(),
         disposition_labels=RETURN_DISPOSITION_LABELS,
         receipt_request_ids={item.id: str(uuid4()) for item in rma.items},
@@ -1317,24 +2077,54 @@ def send_critical_alert_form():
 @roles_required("admin", "manager")
 def purchase_orders_page():
     actor = _current_actor()
-    orders = (
-        PurchaseOrder.query.filter_by(workspace_id=actor.workspace_id)
-        .order_by(PurchaseOrder.created_at.desc(), PurchaseOrder.id.desc())
-        .limit(100)
-        .all()
+    query = PurchaseOrder.query.filter_by(workspace_id=actor.workspace_id).options(
+        selectinload(PurchaseOrder.supplier),
+        selectinload(PurchaseOrder.location),
+        selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.product),
     )
+    status = request.args.get("status", "").strip().lower()
+    allowed_statuses = {
+        "draft", "pending_approval", "approved", "partially_received", "received", "cancelled"
+    }
+    if status in allowed_statuses:
+        query = query.filter_by(status=status)
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.join(Supplier).join(InventoryLocation).filter(
+            or_(
+                PurchaseOrder.po_uid.ilike(f"%{q}%"),
+                PurchaseOrder.external_id.ilike(f"%{q}%"),
+                Supplier.name.ilike(f"%{q}%"),
+                InventoryLocation.code.ilike(f"%{q}%"),
+            )
+        )
+    orders, pagination = _cursor_page(
+        query,
+        PurchaseOrder,
+        kind="purchase-orders",
+        workspace_id=actor.workspace_id,
+        descending=True,
+    )
+    open_po_total = PurchaseOrder.query.filter(
+        PurchaseOrder.workspace_id == actor.workspace_id,
+        PurchaseOrder.status.in_(("draft", "pending_approval", "approved", "partially_received")),
+    ).count()
     return render_template(
         "purchase_orders.html",
         orders=orders,
+        pagination=pagination,
+        q=q,
+        selected_status=status if status in allowed_statuses else "",
+        open_po_total=open_po_total,
         suppliers=Supplier.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
-        ).order_by(Supplier.name).all(),
+        ).order_by(Supplier.name).limit(current_app.config["MAX_PAGE_SIZE"]).all(),
         locations=InventoryLocation.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
-        ).order_by(InventoryLocation.name).all(),
+        ).order_by(InventoryLocation.name).limit(current_app.config["MAX_PAGE_SIZE"]).all(),
         products=Product.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
-        ).order_by(Product.name).all(),
+        ).order_by(Product.name).limit(current_app.config["MAX_PAGE_SIZE"]).all(),
         recommendations=inventory_recommendations(workspace_id=actor.workspace_id),
         accuracy=ForecastAccuracyService.summary(workspace_id=actor.workspace_id),
     )
@@ -1465,6 +2255,18 @@ def health():
     )
 
 
+@api_bp.get("/workspaces/availability")
+def workspace_username_availability():
+    username = normalize_business_username(request.args.get("username"))
+    valid = bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{2,62}", username))
+    available = valid and Workspace.query.filter(
+        func.lower(Workspace.business_username) == username
+    ).first() is None
+    return jsonify(
+        {"username": username, "valid": valid, "available": available}
+    )
+
+
 @web_bp.get("/service-worker.js")
 def service_worker():
     response = send_from_directory(current_app.static_folder, "service-worker.js")
@@ -1491,12 +2293,25 @@ def locations_api():
     query = InventoryLocation.query.filter_by(workspace_id=actor.workspace_id)
     if not include_inactive:
         query = query.filter_by(is_active=True)
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.filter(
+            or_(
+                InventoryLocation.name.ilike(f"%{q}%"),
+                InventoryLocation.code.ilike(f"%{q}%"),
+                InventoryLocation.address.ilike(f"%{q}%"),
+            )
+        )
+    locations, pagination = _cursor_page(
+        query,
+        InventoryLocation,
+        kind="api-locations",
+        workspace_id=actor.workspace_id,
+    )
     return jsonify(
         {
-            "locations": [
-                serialize_location(location)
-                for location in query.order_by(InventoryLocation.name).all()
-            ]
+            "locations": [serialize_location(location) for location in locations],
+            "pagination": pagination,
         }
     )
 
@@ -1577,12 +2392,22 @@ def suppliers_api():
     query = Supplier.query.filter_by(workspace_id=actor.workspace_id)
     if not include_inactive:
         query = query.filter_by(is_active=True)
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.filter(
+            or_(
+                Supplier.name.ilike(f"%{q}%"),
+                Supplier.contact_email.ilike(f"%{q}%"),
+                Supplier.contact_phone.ilike(f"%{q}%"),
+            )
+        )
+    suppliers, pagination = _cursor_page(
+        query, Supplier, kind="api-suppliers", workspace_id=actor.workspace_id
+    )
     return jsonify(
         {
-            "suppliers": [
-                serialize_supplier(supplier)
-                for supplier in query.order_by(Supplier.name).all()
-            ]
+            "suppliers": [serialize_supplier(supplier) for supplier in suppliers],
+            "pagination": pagination,
         }
     )
 
@@ -1654,6 +2479,19 @@ def products_api():
     )
     if not include_archived:
         query = query.filter_by(is_active=True)
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.filter(
+            or_(
+                Product.name.ilike(f"%{q}%"),
+                Product.sku.ilike(f"%{q}%"),
+                Product.barcode.ilike(f"%{q}%"),
+                Product.category.ilike(f"%{q}%"),
+            )
+        )
+    products, pagination = _cursor_page(
+        query, Product, kind="api-products", workspace_id=actor.workspace_id
+    )
     return jsonify(
         {
             "products": [
@@ -1661,8 +2499,9 @@ def products_api():
                     product,
                     include_sensitive=actor.role != "picker",
                 )
-                for product in query.order_by(Product.name)
-            ]
+                for product in products
+            ],
+            "pagination": pagination,
         }
     )
 
@@ -1837,11 +2676,25 @@ def sales_orders_api():
         if status not in {"pending", "picking", "packed", "shipped", "cancelled"}:
             return jsonify({"error": "unsupported sales-order status"}), 400
         query = query.filter_by(status=status)
-    limit = min(max(request.args.get("limit", 100, type=int), 1), 500)
-    orders = query.order_by(
-        SalesOrder.created_at.desc(), SalesOrder.id.desc()
-    ).limit(limit)
-    return jsonify({"orders": [serialize_order(order) for order in orders]})
+    q = request.args.get("q", "").strip()
+    if q:
+        query = query.filter(
+            or_(
+                SalesOrder.customer_reference.ilike(f"%{q}%"),
+                SalesOrder.order_uid.ilike(f"%{q}%"),
+                SalesOrder.external_id.ilike(f"%{q}%"),
+            )
+        )
+    orders, pagination = _cursor_page(
+        query,
+        SalesOrder,
+        kind="api-sales-orders",
+        workspace_id=actor.workspace_id,
+        descending=True,
+    )
+    return jsonify(
+        {"orders": [serialize_order(order) for order in orders], "pagination": pagination}
+    )
 
 
 @api_bp.post("/sales-orders")

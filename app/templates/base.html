@@ -22,10 +22,17 @@
           <button class="icon-button sidebar-close" id="sidebar-close" type="button" aria-label="Close navigation">×</button>
         </div>
 
-        <div class="workspace-chip">
-          <span class="workspace-avatar">{{ (current_user.workspace.name[:1] if current_user and current_user.workspace else 'S')|upper }}</span>
-          <span><small>Workspace</small><strong>{{ current_user.workspace.name if current_user and current_user.workspace else 'StockPilot' }}</strong></span>
-        </div>
+        <details class="workspace-switcher">
+          <summary class="workspace-chip">
+            <span class="workspace-avatar">{{ (current_workspace.name[:1] if current_workspace else 'S')|upper }}</span>
+            <span><small>Workspace · @{{ current_workspace.business_username if current_workspace else 'stockpilot' }}</small><strong>{{ current_workspace.name if current_workspace else 'StockPilot' }}</strong></span><i>⌄</i>
+          </summary>
+          <div class="workspace-menu">
+            <p>Switch workspace</p>
+            {% for membership in workspace_memberships %}<form action="{{ url_for('web.switch_workspace', workspace_id=membership.workspace_id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.path }}"><button type="submit" class="{% if current_workspace and membership.workspace_id == current_workspace.id %}active{% endif %}"><span>{{ membership.workspace.name[:1]|upper }}</span><b>{{ membership.workspace.name }}</b><small>{{ membership.role|title }}</small></button></form>{% endfor %}
+            <a href="{{ url_for('web.create_workspace_page') }}"><span>＋</span><b>New workspace</b><small>Create an isolated business</small></a>
+          </div>
+        </details>
 
         <nav class="sidebar-nav" aria-label="Primary navigation">
           <p class="sidebar-label">Workspace</p>
@@ -54,12 +61,13 @@
             <a href="{{ url_for('web.suppliers_page') }}" class="nav-link {% if request.endpoint and 'supplier' in request.endpoint %}active{% endif %}"><span class="nav-icon">◇</span><span>Suppliers</span></a>
             <a href="{{ url_for('web.reports_page') }}" class="nav-link {% if request.endpoint and 'report' in request.endpoint %}active{% endif %}"><span class="nav-icon">▥</span><span>Reports & alerts</span></a>
             {% if current_user and current_user.role == 'admin' %}<a href="{{ url_for('web.users_page') }}" class="nav-link {% if request.endpoint and 'user' in request.endpoint %}active{% endif %}"><span class="nav-icon">♙</span><span>Users & access</span><kbd>Admin</kbd></a>{% endif %}
+            {% if current_user and current_user.role == 'admin' %}<a href="{{ url_for('web.workspace_settings_page') }}" class="nav-link {% if request.endpoint == 'web.workspace_settings_page' %}active{% endif %}"><span class="nav-icon">⚙</span><span>Workspace settings</span></a>{% endif %}
           {% endif %}
         </nav>
 
         <div class="sidebar-footer">
           <span class="pulse"></span>
-          <span><strong>Ledger connected</strong><small>Stock movements are live</small></span>
+          <span><strong>Ledger connected</strong><small>Stock movements are live · <a href="{{ url_for('web.security_page') }}">Security</a></small></span>
         </div>
       </aside>
 
@@ -108,6 +116,7 @@
           <a href="{{ url_for('web.manage_page') }}" data-command="create product adjust inventory manage"><span>＋</span><b>Inventory setup</b><small>Create and adjust stock</small></a>
           <a href="{{ url_for('web.reports_page') }}" data-command="reports alerts valuation export"><span>▥</span><b>Reports & alerts</b><small>Export and notify</small></a>
         {% endif %}
+        <a href="{{ url_for('web.security_page') }}" data-command="security password mfa account"><span>⌁</span><b>Account security</b><small>Password and MFA</small></a>
       </div>
       <p class="command-empty" id="command-empty" hidden>No matching destination. Try “purchase”, “picker”, or “reports”.</p>
     </dialog>

@@ -12,11 +12,19 @@
   </div>
 </section>
 
+<form class="table-filters panel" method="get">
+  <label class="filter-search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search name, SKU, barcode or category"></label>
+  {% if include_archived %}<input type="hidden" name="include_archived" value="1">{% endif %}
+  <select name="limit" aria-label="Rows per page">{% for amount in [10,25,50,100] %}<option value="{{ amount }}" {% if pagination.limit == amount %}selected{% endif %}>{{ amount }} per page</option>{% endfor %}</select>
+  <button class="button secondary compact">Search</button>
+  {% if q %}<a class="text-link" href="{{ url_for('web.products_page', include_archived=1 if include_archived else 0) }}">Clear</a>{% endif %}
+</form>
+
 <section class="panel table-panel">
   <div class="panel-header">
     <div>
       <p class="eyebrow">PRODUCT CATALOGUE</p>
-      <h2>{{ products|length }} tracked product{{ '' if products|length == 1 else 's' }}</h2>
+      <h2>{{ pagination.total }} tracked product{{ '' if pagination.total == 1 else 's' }}</h2>
     </div>
     <span class="muted">Every balance below comes from the stock-level ledger.</span>
   </div>
@@ -59,5 +67,6 @@
       </tbody>
     </table>
   </div>
+  {% include "_pagination.html" %}
 </section>
 {% endblock %}

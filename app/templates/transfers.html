@@ -4,6 +4,12 @@
 {% block heading %}Stock transfers{% endblock %}
 
 {% block content %}
+<form class="table-filters panel" method="get">
+  <label class="filter-search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search transfer, SKU or product"></label>
+  <select name="limit" aria-label="Rows per page">{% for amount in [10,25,50,100] %}<option value="{{ amount }}" {% if pagination.limit == amount %}selected{% endif %}>{{ amount }} per page</option>{% endfor %}</select>
+  <button class="button secondary compact">Search history</button>
+  {% if q %}<a class="text-link" href="{{ url_for('web.transfers_page') }}">Clear</a>{% endif %}
+</form>
 <section class="content-grid transfer-layout">
   <article class="panel form-panel">
     <p class="eyebrow">ATOMIC MOVEMENT</p><h2>Transfer stock</h2>
@@ -25,6 +31,7 @@
       {% for transfer in transfers %}<tr><td><strong>{{ transfer.transfer_uid[:8] }}</strong><small>{{ transfer.created_at.strftime('%d %b %Y %H:%M') }}</small></td><td><strong>{{ transfer.product.sku }}</strong><small>{{ transfer.product.name }}</small></td><td>{{ transfer.source_location.code }}{% if transfer.source_bin %}/{{ transfer.source_bin.code }}{% endif %} → {{ transfer.destination_location.code }}{% if transfer.destination_bin %}/{{ transfer.destination_bin.code }}{% endif %}</td><td>{{ transfer.quantity }} {{ transfer.product.unit_of_measure }}</td><td>{{ transfer.user.name }}</td></tr>
       {% else %}<tr><td colspan="5" class="empty-row">No transfers completed yet.</td></tr>{% endfor %}
     </tbody></table></div>
+    {% include "_pagination.html" %}
   </article>
 </section>
 {% endblock %}

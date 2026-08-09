@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+from flask import g, has_request_context
 from sqlalchemy import Computed
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import synonym
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -20,9 +22,28 @@ class Workspace(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), nullable=False)
+    business_username = db.Column(
+        db.String(63), nullable=False, unique=True, index=True,
+        default=lambda: f"workspace-{uuid4().hex[:12]}"
+    )
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
 
-    users = db.relationship("User", back_populates="workspace")
+    users = db.relationship(
+        "User", back_populates="workspace", foreign_keys="User._workspace_id"
+    )
+    memberships = db.relationship(
+        "WorkspaceMembership", back_populates="workspace", cascade="all, delete-orphan"
+    )
+    settings = db.relationship(
+        "WorkspaceSetting", back_populates="workspace", uselist=False,
+        cascade="all, delete-orphan"
+    )
+    integrations = db.relationship(
+        "WorkspaceIntegration", back_populates="workspace", cascade="all, delete-orphan"
+    )
     locations = db.relationship("InventoryLocation", back_populates="workspace")
     suppliers = db.relationship("Supplier", back_populates="workspace")
     products = db.relationship("Product", back_populates="workspace")
@@ -35,15 +56,62 @@ class User(db.Model):
     __tablename__ = "users"
 
     id = db.Column(db.Integer, primary_key=True)
-    workspace_id = db.Column(db.Integer, db.ForeignKey("workspaces.id"), nullable=False)
+    # Keep the original columns as a durable home-workspace fallback for old
+    # audit records and deployments. During a request, the hybrid properties
+    # resolve to the membership selected in that browser session.
+    _workspace_id = db.Column(
+        "workspace_id", db.Integer, db.ForeignKey("workspaces.id"), nullable=False
+    )
     name = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(255), nullable=False, unique=True, index=True)
     password_hash = db.Column(db.String(255))
-    role = db.Column(db.String(50), nullable=False, default="admin")
+    _role = db.Column("role", db.String(50), nullable=False, default="admin")
     is_active = db.Column(db.Boolean, nullable=False, default=True)
+    email_verified_at = db.Column(db.DateTime(timezone=True))
+    mfa_secret_encrypted = db.Column(db.Text)
+    mfa_enabled_at = db.Column(db.DateTime(timezone=True))
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
 
-    workspace = db.relationship("Workspace", back_populates="users")
+    workspace = db.relationship(
+        "Workspace", back_populates="users", foreign_keys=[_workspace_id]
+    )
+    memberships = db.relationship(
+        "WorkspaceMembership", back_populates="user", cascade="all, delete-orphan"
+    )
+    auth_tokens = db.relationship(
+        "AuthToken", back_populates="user", cascade="all, delete-orphan"
+    )
+    mfa_recovery_codes = db.relationship(
+        "MFARecoveryCode", back_populates="user", cascade="all, delete-orphan"
+    )
+
+    @hybrid_property
+    def workspace_id(self) -> int:
+        if has_request_context() and getattr(g, "current_user", None) is self:
+            return int(getattr(g, "active_workspace_id", self._workspace_id))
+        return self._workspace_id
+
+    @workspace_id.setter
+    def workspace_id(self, value: int) -> None:
+        self._workspace_id = value
+
+    @workspace_id.expression
+    def workspace_id(cls):
+        return cls._workspace_id
+
+    @hybrid_property
+    def role(self) -> str:
+        if has_request_context() and getattr(g, "current_user", None) is self:
+            return str(getattr(g, "active_workspace_role", self._role))
+        return self._role
+
+    @role.setter
+    def role(self, value: str) -> None:
+        self._role = value
+
+    @role.expression
+    def role(cls):
+        return cls._role
 
     def set_password(self, password: str) -> None:
         self.password_hash = generate_password_hash(password)
@@ -55,6 +123,125 @@ class User(db.Model):
 
     def has_role(self, *roles: str) -> bool:
         return self.is_active and self.role in roles
+
+
+class WorkspaceMembership(db.Model):
+    """A user's role and access state inside one independently isolated tenant."""
+
+    __tablename__ = "workspace_memberships"
+    __table_args__ = (
+        db.UniqueConstraint("workspace_id", "user_id", name="uq_membership_workspace_user"),
+        db.CheckConstraint(
+            "role IN ('admin', 'manager', 'picker')", name="ck_membership_role"
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    role = db.Column(db.String(50), nullable=False, default="picker")
+    is_active = db.Column(db.Boolean, nullable=False, default=True)
+    joined_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    last_accessed_at = db.Column(db.DateTime(timezone=True))
+
+    workspace = db.relationship("Workspace", back_populates="memberships")
+    user = db.relationship("User", back_populates="memberships")
+
+
+class WorkspaceSetting(db.Model):
+    __tablename__ = "workspace_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, unique=True
+    )
+    timezone = db.Column(db.String(64), nullable=False, default="Asia/Kolkata")
+    currency = db.Column(db.String(3), nullable=False, default="INR")
+    date_format = db.Column(db.String(32), nullable=False, default="DD MMM YYYY")
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    workspace = db.relationship("Workspace", back_populates="settings")
+
+
+class WorkspaceIntegration(db.Model):
+    __tablename__ = "workspace_integrations"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "workspace_id", "provider", "name", name="uq_workspace_integration"
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    workspace_id = db.Column(
+        db.Integer, db.ForeignKey("workspaces.id"), nullable=False, index=True
+    )
+    provider = db.Column(db.String(50), nullable=False)
+    name = db.Column(db.String(100), nullable=False, default="default")
+    config_json = db.Column(db.JSON, nullable=False, default=dict)
+    # Secrets stay in the deployment secret store. This field contains only
+    # the environment/Secrets Manager reference used to retrieve one.
+    secret_reference = db.Column(db.String(255))
+    is_active = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    workspace = db.relationship("Workspace", back_populates="integrations")
+
+
+class AuthToken(db.Model):
+    """Single-use, hashed tokens for verification, recovery, and invitations."""
+
+    __tablename__ = "auth_tokens"
+    __table_args__ = (
+        db.CheckConstraint(
+            "purpose IN ('email_verification', 'password_reset', 'invitation')",
+            name="ck_auth_token_purpose",
+        ),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), index=True)
+    workspace_id = db.Column(db.Integer, db.ForeignKey("workspaces.id"), index=True)
+    email = db.Column(db.String(255))
+    purpose = db.Column(db.String(40), nullable=False, index=True)
+    token_hash = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    payload_json = db.Column(db.JSON, nullable=False, default=dict)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    consumed_at = db.Column(db.DateTime(timezone=True))
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+
+    user = db.relationship("User", back_populates="auth_tokens")
+    workspace = db.relationship("Workspace")
+
+
+class LoginAttempt(db.Model):
+    """Database-backed throttling shared by every Gunicorn worker."""
+
+    __tablename__ = "login_attempts"
+
+    id = db.Column(db.Integer, primary_key=True)
+    attempt_key_hash = db.Column(db.String(64), nullable=False, index=True)
+    succeeded = db.Column(db.Boolean, nullable=False, default=False)
+    attempted_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+
+
+class MFARecoveryCode(db.Model):
+    __tablename__ = "mfa_recovery_codes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False, index=True)
+    code_hash = db.Column(db.String(64), nullable=False, unique=True)
+    used_at = db.Column(db.DateTime(timezone=True))
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=utcnow)
+
+    user = db.relationship("User", back_populates="mfa_recovery_codes")
 
 
 class Supplier(db.Model):

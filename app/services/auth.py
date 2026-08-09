@@ -9,8 +9,8 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from app import db
-from app.models import User, Workspace
-from app.services.identity import ensure_default_identity
+from app.models import InventoryLocation, User, Workspace, WorkspaceMembership
+from app.services.identity import ensure_default_identity, normalize_business_username
 
 
 ROLES = ("admin", "manager", "picker")
@@ -100,7 +100,9 @@ def activate_legacy_credentials() -> User | None:
     return actor
 
 
-def authenticate(identifier: object, password: object) -> User | None:
+def authenticate(
+    identifier: object, password: object, *, business_username: object | None = None
+) -> User | None:
     normalized = str(identifier or "").strip().lower()
     supplied_password = str(password or "")
     if not normalized or not supplied_password:
@@ -115,6 +117,20 @@ def authenticate(identifier: object, password: object) -> User | None:
             email=current_app.config["DEFAULT_STAFF_EMAIL"].strip().lower()
         ).first()
     if user is None or not user.is_active or not user.check_password(supplied_password):
+        return None
+    if business_username:
+        workspace = Workspace.query.filter(
+            func.lower(Workspace.business_username)
+            == normalize_business_username(business_username)
+        ).first()
+        if workspace is None or WorkspaceMembership.query.filter_by(
+            user_id=user.id, workspace_id=workspace.id, is_active=True
+        ).first() is None:
+            return None
+    elif WorkspaceMembership.query.filter_by(
+        user_id=user.id, is_active=True
+    ).count() > 1:
+        # Do not guess which tenant a shared identity intended to enter.
         return None
     return user
 
@@ -193,7 +209,9 @@ class UserService:
         password_confirmation = payload.get("password_confirm")
         if password_confirmation is not None and password_confirmation != values["password"]:
             raise UserValidationError({"password_confirm": "does not match password"})
-        workspace_name = str(payload.get("workspace_name", "")).strip()
+        workspace_name = str(
+            payload.get("business_name") or payload.get("workspace_name") or ""
+        ).strip()
         if len(workspace_name) > 255:
             raise UserValidationError(
                 {"workspace_name": "must be 255 characters or fewer"}
@@ -202,11 +220,43 @@ class UserService:
         actor = ensure_default_identity(commit=False)
         if workspace_name:
             actor.workspace.name = workspace_name
+            requested_username = normalize_business_username(
+                payload.get("business_username") or workspace_name
+            )
+            conflict = Workspace.query.filter(
+                func.lower(Workspace.business_username) == requested_username,
+                Workspace.id != actor.workspace.id,
+            ).first()
+            if conflict:
+                raise UserValidationError(
+                    {"business_username": "is already in use"}
+                )
+            actor.workspace.business_username = requested_username
         actor.name = values["name"]
         actor.email = values["email"]
         actor.role = "admin"
         actor.is_active = True
         actor.set_password(values["password"])
+        membership = WorkspaceMembership.query.filter_by(
+            user_id=actor.id, workspace_id=actor._workspace_id
+        ).first()
+        if membership:
+            membership.role = "admin"
+            membership.is_active = True
+        warehouse_name = str(payload.get("warehouse_name") or "").strip()
+        warehouse_address = str(payload.get("warehouse_address") or "").strip()
+        if warehouse_name and not InventoryLocation.query.filter_by(
+            workspace_id=actor._workspace_id
+        ).first():
+            code = re.sub(r"[^A-Z0-9]+", "", warehouse_name.upper())[:12] or "MAIN"
+            db.session.add(
+                InventoryLocation(
+                    workspace_id=actor._workspace_id,
+                    name=warehouse_name[:120],
+                    code=code,
+                    address=warehouse_address[:255] or None,
+                )
+            )
         try:
             db.session.commit()
         except IntegrityError as error:
@@ -223,6 +273,12 @@ class UserService:
         user = User(workspace=workspace, **values)
         user.set_password(password)
         db.session.add(user)
+        db.session.flush()
+        db.session.add(
+            WorkspaceMembership(
+                user=user, workspace=workspace, role=user._role, is_active=True
+            )
+        )
         UserService._commit()
         return user
 
@@ -237,21 +293,27 @@ class UserService:
         if not values:
             raise UserValidationError({"payload": "include at least one editable field"})
 
-        requested_role = values.get("role", user.role)
-        requested_active = values.get("is_active", user.is_active)
+        membership = WorkspaceMembership.query.filter_by(
+            user_id=user.id, workspace_id=acting_user.workspace_id
+        ).first()
+        if membership is None:
+            raise UserValidationError({"account": "does not belong to this workspace"})
+        requested_role = values.get("role", membership.role)
+        requested_active = values.get("is_active", membership.is_active)
         if user.id == acting_user.id and (
             requested_role != "admin" or not requested_active
         ):
             raise UserValidationError(
                 {"account": "you cannot demote or deactivate your signed-in account"}
             )
-        if user.role == "admin" and user.is_active and (
+        if membership.role == "admin" and membership.is_active and (
             requested_role != "admin" or not requested_active
         ):
-            other_admin = User.query.filter(
-                User.id != user.id,
-                User.workspace_id == user.workspace_id,
-                User.role == "admin",
+            other_admin = WorkspaceMembership.query.join(User).filter(
+                WorkspaceMembership.workspace_id == acting_user.workspace_id,
+                WorkspaceMembership.user_id != user.id,
+                WorkspaceMembership.role == "admin",
+                WorkspaceMembership.is_active.is_(True),
                 User.is_active.is_(True),
             ).first()
             if other_admin is None:
@@ -260,10 +322,22 @@ class UserService:
                 )
 
         password = values.pop("password", None)
+        role = values.pop("role", None)
+        active = values.pop("is_active", None)
         for field, value in values.items():
             setattr(user, field, value)
         if password:
             user.set_password(password)
+        if role is not None:
+            membership.role = str(role)
+            if user._workspace_id == membership.workspace_id:
+                user._role = str(role)
+        if active is not None:
+            membership.is_active = bool(active)
+            # Preserve legacy one-workspace account deactivation semantics, but
+            # never disable a person's global identity because one tenant did.
+            if len(user.memberships) == 1:
+                user.is_active = bool(active)
         UserService._commit()
         return user
 

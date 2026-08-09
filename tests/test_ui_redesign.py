@@ -1,11 +1,15 @@
 from app import db
-from app.models import User
+from app.models import User, WorkspaceMembership
 
 
 def _set_default_role(app, role):
     with app.app_context():
         actor = User.query.order_by(User.id).first()
         actor.role = role
+        membership = WorkspaceMembership.query.filter_by(
+            user_id=actor.id, workspace_id=actor._workspace_id
+        ).one()
+        membership.role = role
         db.session.commit()
 
 

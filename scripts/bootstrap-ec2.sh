@@ -38,10 +38,9 @@ if ! grep -q '^APP_ENV=production$' /etc/ai-inventory-tracker.env \
   || ! grep -q '^AUTO_CREATE_SCHEMA=false$' /etc/ai-inventory-tracker.env \
   || grep -Eq '^(SECRET_KEY|POS_WEBHOOK_TOKEN|INTERNAL_API_TOKEN)=((replace-with-.*)|(local-.*))$' /etc/ai-inventory-tracker.env \
   || ! grep -q '^SESSION_COOKIE_SECURE=true$' /etc/ai-inventory-tracker.env \
-  || ! grep -q '^ALLOW_WEB_SIGNUP=false$' /etc/ai-inventory-tracker.env \
   || ! grep -Eq '^TRUSTED_HOSTS=.+$' /etc/ai-inventory-tracker.env \
   || grep -q '^DATABASE_URL=sqlite:' /etc/ai-inventory-tracker.env; then
-  echo "Refusing to start: set production mode, disable automatic schema creation, configure RDS/trusted hosts/strong secrets/secure cookies, and disable web signup." >&2
+  echo "Refusing to start: set production mode, disable automatic schema creation, and configure RDS, trusted hosts, strong secrets, and secure cookies." >&2
   exit 2
 fi
 

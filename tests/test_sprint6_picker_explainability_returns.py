@@ -17,6 +17,7 @@ from app.models import (
     StockLevel,
     User,
     Workspace,
+    WorkspaceMembership,
 )
 from app.schema import (
     SPRINT_1_SCHEMA_VERSION,
@@ -27,6 +28,7 @@ from app.schema import (
     SPRINT_6_SCHEMA_VERSION,
     SPRINT_7_SCHEMA_VERSION,
     SPRINT_8_SCHEMA_VERSION,
+    SPRINT_9_SCHEMA_VERSION,
     current_schema_versions,
     migrate_schema,
 )
@@ -189,8 +191,9 @@ def test_sprint6_migration_backfills_legacy_forecast_factors(tmp_path):
             SPRINT_6_SCHEMA_VERSION,
             SPRINT_7_SCHEMA_VERSION,
             SPRINT_8_SCHEMA_VERSION,
+            SPRINT_9_SCHEMA_VERSION,
         )
-        assert result.version == SPRINT_8_SCHEMA_VERSION
+        assert result.version == SPRINT_9_SCHEMA_VERSION
         assert "factors" in columns
         assert factors == "{}"
         assert {
@@ -199,7 +202,7 @@ def test_sprint6_migration_backfills_legacy_forecast_factors(tmp_path):
             "return_receipts",
             "return_events",
         }.issubset(tables)
-        assert current_schema_versions()[-1] == SPRINT_8_SCHEMA_VERSION
+        assert current_schema_versions()[-1] == SPRINT_9_SCHEMA_VERSION
         db.session.remove()
 
 
@@ -448,7 +451,7 @@ def test_return_restock_capacity_failure_rolls_back_receipt_and_status(
         assert StockLevel.query.filter_by(bin_id=constrained_bin_id).count() == 0
 
 
-def test_returns_fail_closed_if_multiple_workspaces_exist(client, app, seeded_catalog):
+def test_returns_are_isolated_when_multiple_workspaces_exist(client, app, seeded_catalog):
     order = _ship_order(client, _create_order(client, external_id="scope-rma", quantity=1))
     created, _ = _request_return(client, order, external_id="scope-return", quantity=1)
     return_id = created.json["return"]["id"]
@@ -462,15 +465,22 @@ def test_returns_fail_closed_if_multiple_workspaces_exist(client, app, seeded_ca
             is_active=True,
         )
         db.session.add_all([other_workspace, other_actor])
+        db.session.flush()
+        db.session.add(
+            WorkspaceMembership(
+                workspace=other_workspace, user=other_actor, role="admin", is_active=True
+            )
+        )
         db.session.commit()
 
     assert client.get(
         f"/api/returns/{return_id}", headers=_headers("other-returns@test.local")
-    ).status_code == 503
+    ).status_code == 404
     own_list = client.get(
         "/api/returns", headers=_headers("other-returns@test.local")
     )
-    assert own_list.status_code == 503
+    assert own_list.status_code == 200
+    assert own_list.json["returns"] == []
 
 
 def test_mobile_picker_rma_pages_and_offline_shell_load(client, seeded_catalog):

@@ -16,6 +16,7 @@ SPRINT_5_SCHEMA_VERSION = "20260806_sprint5_suppliers_reporting_alerts"
 SPRINT_6_SCHEMA_VERSION = "20260806_sprint6_picker_explainability_returns"
 SPRINT_7_SCHEMA_VERSION = "20260808_single_workspace_hardening"
 SPRINT_8_SCHEMA_VERSION = "20260808_procurement_lots_intelligence"
+SPRINT_9_SCHEMA_VERSION = "20260809_saas_identity_workspaces"
 SCHEMA_VERSIONS = (
     SPRINT_1_SCHEMA_VERSION,
     SPRINT_2_SCHEMA_VERSION,
@@ -25,6 +26,7 @@ SCHEMA_VERSIONS = (
     SPRINT_6_SCHEMA_VERSION,
     SPRINT_7_SCHEMA_VERSION,
     SPRINT_8_SCHEMA_VERSION,
+    SPRINT_9_SCHEMA_VERSION,
 )
 
 
@@ -209,10 +211,19 @@ def _seed_workspace_and_actor(connection) -> tuple[int, int]:
         sa.text("SELECT id FROM workspaces ORDER BY id LIMIT 1")
     ).scalar_one_or_none()
     if workspace_id is None:
-        connection.execute(
-            sa.text("INSERT INTO workspaces (name, created_at) VALUES (:name, CURRENT_TIMESTAMP)"),
-            {"name": "StockPilot Workspace"},
-        )
+        if "business_username" in _columns(connection, "workspaces"):
+            connection.execute(
+                sa.text(
+                    "INSERT INTO workspaces (name, business_username, created_at, updated_at) "
+                    "VALUES (:name, :username, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"name": "StockPilot Workspace", "username": "stockpilot"},
+            )
+        else:
+            connection.execute(
+                sa.text("INSERT INTO workspaces (name, created_at) VALUES (:name, CURRENT_TIMESTAMP)"),
+                {"name": "StockPilot Workspace"},
+            )
         workspace_id = connection.execute(
             sa.text("SELECT id FROM workspaces ORDER BY id LIMIT 1")
         ).scalar_one()
@@ -598,10 +609,9 @@ def _upgrade_sprint7(connection) -> None:
     workspace_count = connection.execute(
         sa.text("SELECT COUNT(*) FROM workspaces")
     ).scalar_one()
-    if int(workspace_count) > 1:
-        raise RuntimeError(
-            "StockPilot now supports one workspace; consolidate workspace rows before migrating"
-        )
+    # Older revisions failed closed when more than one workspace existed. The
+    # SaaS identity revision keeps each row and backfills only records whose
+    # ownership is missing, so an interrupted multi-tenant rollout is safe.
 
     workspace_id, _ = _seed_workspace_and_actor(connection)
     connection.execute(
@@ -777,6 +787,91 @@ def _upgrade_sprint8(connection) -> None:
     ChatMessage.__table__.create(bind=connection, checkfirst=True)
 
 
+def _upgrade_sprint9(connection) -> None:
+    """Add tenant memberships and production authentication state."""
+    from app.models import (
+        AuthToken,
+        LoginAttempt,
+        MFARecoveryCode,
+        WorkspaceIntegration,
+        WorkspaceMembership,
+        WorkspaceSetting,
+    )
+
+    _add_column(connection, "workspaces", "business_username", "VARCHAR(63) NULL")
+    _add_column(connection, "workspaces", "updated_at", "DATETIME NULL")
+    rows = connection.execute(
+        sa.text("SELECT id, name, business_username FROM workspaces ORDER BY id")
+    ).mappings()
+    used: set[str] = set()
+    for row in rows:
+        current = str(row.get("business_username") or "").strip().lower()
+        base = re.sub(r"[^a-z0-9-]+", "-", str(row.get("name") or "workspace").lower())
+        base = re.sub(r"-+", "-", base).strip("-")[:54] or "workspace"
+        candidate = current or base
+        if len(candidate) < 3:
+            candidate = f"{candidate}-workspace"
+        if candidate in used:
+            candidate = f"{base}-{row['id']}"[:63]
+        used.add(candidate)
+        connection.execute(
+            sa.text(
+                "UPDATE workspaces SET business_username = :username, "
+                "updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP) "
+                "WHERE id = :workspace_id"
+            ),
+            {"username": candidate, "workspace_id": row["id"]},
+        )
+    if "uq_workspaces_business_username" not in _indexes(connection, "workspaces"):
+        connection.execute(
+            sa.text(
+                "CREATE UNIQUE INDEX uq_workspaces_business_username "
+                "ON workspaces (business_username)"
+            )
+        )
+    if connection.dialect.name in {"mysql", "mariadb"}:
+        connection.execute(
+            sa.text(
+                "ALTER TABLE workspaces "
+                "MODIFY COLUMN business_username VARCHAR(63) NOT NULL, "
+                "MODIFY COLUMN updated_at DATETIME NOT NULL"
+            )
+        )
+
+    _add_column(connection, "users", "email_verified_at", "DATETIME NULL")
+    _add_column(connection, "users", "mfa_secret_encrypted", "TEXT NULL")
+    _add_column(connection, "users", "mfa_enabled_at", "DATETIME NULL")
+
+    WorkspaceMembership.__table__.create(bind=connection, checkfirst=True)
+    WorkspaceSetting.__table__.create(bind=connection, checkfirst=True)
+    WorkspaceIntegration.__table__.create(bind=connection, checkfirst=True)
+    AuthToken.__table__.create(bind=connection, checkfirst=True)
+    LoginAttempt.__table__.create(bind=connection, checkfirst=True)
+    MFARecoveryCode.__table__.create(bind=connection, checkfirst=True)
+
+    connection.execute(
+        sa.text(
+            "INSERT INTO workspace_memberships "
+            "(workspace_id, user_id, role, is_active, joined_at) "
+            "SELECT users.workspace_id, users.id, users.role, users.is_active, users.created_at "
+            "FROM users WHERE NOT EXISTS ("
+            "SELECT 1 FROM workspace_memberships membership "
+            "WHERE membership.workspace_id = users.workspace_id "
+            "AND membership.user_id = users.id)"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "INSERT INTO workspace_settings "
+            "(workspace_id, timezone, currency, date_format, created_at, updated_at) "
+            "SELECT workspaces.id, 'Asia/Kolkata', 'INR', 'DD MMM YYYY', "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP FROM workspaces WHERE NOT EXISTS ("
+            "SELECT 1 FROM workspace_settings settings "
+            "WHERE settings.workspace_id = workspaces.id)"
+        )
+    )
+
+
 def migrate_schema() -> MigrationResult:
     """Apply all pending StockPilot migrations to SQLite or RDS MySQL."""
     applied_versions: list[str] = []
@@ -874,8 +969,16 @@ def migrate_schema() -> MigrationResult:
             )
             applied_versions.append(SPRINT_8_SCHEMA_VERSION)
 
+        if SPRINT_9_SCHEMA_VERSION not in existing:
+            _upgrade_sprint9(connection)
+            connection.execute(
+                sa.text("INSERT INTO schema_migrations (version) VALUES (:version)"),
+                {"version": SPRINT_9_SCHEMA_VERSION},
+            )
+            applied_versions.append(SPRINT_9_SCHEMA_VERSION)
+
     return MigrationResult(
-        version=applied_versions[-1] if applied_versions else SPRINT_8_SCHEMA_VERSION,
+        version=applied_versions[-1] if applied_versions else SPRINT_9_SCHEMA_VERSION,
         applied=bool(applied_versions),
         applied_versions=tuple(applied_versions),
     )

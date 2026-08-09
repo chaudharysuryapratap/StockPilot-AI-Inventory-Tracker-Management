@@ -41,7 +41,20 @@ class Config:
     STAFF_USERNAME = os.getenv("STAFF_USERNAME", "")
     STAFF_PASSWORD = os.getenv("STAFF_PASSWORD", "")
     DEFAULT_WORKSPACE_NAME = os.getenv("DEFAULT_WORKSPACE_NAME", "StockPilot Workspace")
+    DEFAULT_BUSINESS_USERNAME = os.getenv("DEFAULT_BUSINESS_USERNAME", "stockpilot")
     DEFAULT_STAFF_EMAIL = os.getenv("DEFAULT_STAFF_EMAIL", "staff@stockpilot.local")
+    REQUIRE_EMAIL_VERIFICATION = _as_bool(
+        os.getenv("REQUIRE_EMAIL_VERIFICATION"), default=APP_ENV == "production"
+    )
+    EMAIL_VERIFICATION_HOURS = max(1, int(os.getenv("EMAIL_VERIFICATION_HOURS", "24")))
+    PASSWORD_RESET_MINUTES = max(5, int(os.getenv("PASSWORD_RESET_MINUTES", "30")))
+    INVITATION_EXPIRY_HOURS = max(1, int(os.getenv("INVITATION_EXPIRY_HOURS", "72")))
+    MFA_ISSUER = os.getenv("MFA_ISSUER", "StockPilot")
+    MFA_ENCRYPTION_KEY = os.getenv("MFA_ENCRYPTION_KEY", "")
+    AUTH_EMAIL_ENABLED = _as_bool(os.getenv("AUTH_EMAIL_ENABLED"), default=False)
+    OIDC_ENABLED = _as_bool(os.getenv("OIDC_ENABLED"), default=True)
+    DEFAULT_PAGE_SIZE = max(10, min(100, int(os.getenv("DEFAULT_PAGE_SIZE", "25"))))
+    MAX_PAGE_SIZE = max(25, min(250, int(os.getenv("MAX_PAGE_SIZE", "100"))))
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SECURE = _as_bool(os.getenv("SESSION_COOKIE_SECURE"))
@@ -117,8 +130,22 @@ def validate_runtime_config(config: dict) -> None:
         errors.append("STAFF_AUTH_ENABLED must remain enabled in production")
     if not config.get("SESSION_COOKIE_SECURE"):
         errors.append("SESSION_COOKIE_SECURE must be enabled behind HTTPS")
-    if config.get("ALLOW_WEB_SIGNUP"):
-        errors.append("ALLOW_WEB_SIGNUP must be disabled after administrator provisioning")
+    if config.get("ALLOW_WEB_SIGNUP") and not config.get("REQUIRE_EMAIL_VERIFICATION"):
+        errors.append("public signup requires REQUIRE_EMAIL_VERIFICATION in production")
+    if config.get("REQUIRE_EMAIL_VERIFICATION") and not (
+        config.get("AUTH_EMAIL_ENABLED") or config.get("SES_ENABLED")
+    ):
+        errors.append("email verification requires AUTH_EMAIL_ENABLED or SES_ENABLED")
+    mfa_encryption_key = str(config.get("MFA_ENCRYPTION_KEY") or "").strip()
+    if not mfa_encryption_key:
+        errors.append("MFA_ENCRYPTION_KEY must be set separately from SECRET_KEY")
+    else:
+        try:
+            from cryptography.fernet import Fernet
+
+            Fernet(mfa_encryption_key.encode("ascii"))
+        except (ValueError, TypeError):
+            errors.append("MFA_ENCRYPTION_KEY must be a valid Fernet key")
     if not config.get("TRUSTED_HOSTS"):
         errors.append("TRUSTED_HOSTS must list the production application hostname")
     if str(config.get("SQLALCHEMY_DATABASE_URI", "")).startswith("sqlite:"):

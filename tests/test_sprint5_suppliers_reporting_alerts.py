@@ -18,12 +18,14 @@ from app.models import (
     Supplier,
     User,
     Workspace,
+    WorkspaceMembership,
     utcnow,
 )
 from app.schema import (
     SPRINT_6_SCHEMA_VERSION,
     SPRINT_7_SCHEMA_VERSION,
     SPRINT_8_SCHEMA_VERSION,
+    SPRINT_9_SCHEMA_VERSION,
     current_schema_versions,
     migrate_schema,
 )
@@ -114,7 +116,7 @@ def test_supplier_api_crud_validation_archive_and_product_link(
     assert linked_product.json["product"]["supplier"] == "Noida Fresh Foods"
 
 
-def test_multiple_workspace_rows_fail_closed(client, app):
+def test_multiple_workspaces_are_isolated_by_membership(client, app):
     with app.app_context():
         other_workspace = Workspace(name="Other workspace")
         db.session.add(other_workspace)
@@ -132,6 +134,12 @@ def test_multiple_workspace_rows_fail_closed(client, app):
             lead_time_days=4,
         )
         db.session.add_all([other_user, other_supplier])
+        db.session.flush()
+        db.session.add(
+            WorkspaceMembership(
+                workspace=other_workspace, user=other_user, role="admin", is_active=True
+            )
+        )
         db.session.commit()
         supplier_id = other_supplier.id
 
@@ -144,8 +152,9 @@ def test_multiple_workspace_rows_fail_closed(client, app):
         headers=INTERNAL_HEADERS,
         json={"lead_time_days": 8},
     )
-    assert own_listing.status_code == 503
-    assert cross_workspace_update.status_code == 503
+    assert own_listing.status_code == 200
+    assert [row["name"] for row in own_listing.json["suppliers"]] == ["Other Supplier"]
+    assert cross_workspace_update.status_code == 404
 
 
 def test_risk_and_current_cost_valuation_reports_use_authoritative_stock(
@@ -333,7 +342,7 @@ def test_sprint5_migrates_legacy_supplier_columns_without_losing_contact(tmp_pat
         }
         tables = set(inspect(db.engine).get_table_names())
 
-        assert result.version == SPRINT_8_SCHEMA_VERSION
+        assert result.version == SPRINT_9_SCHEMA_VERSION
         assert supplier.name == "Legacy Foods"
         assert supplier.contact_email == "legacy@example.com"
         assert supplier.contact_phone == "0123456789"

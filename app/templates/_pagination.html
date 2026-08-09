@@ -1,0 +1,6 @@
+{% if pagination %}
+<nav class="pagination-bar" aria-label="Pagination">
+  <span>Showing up to {{ pagination.limit }} of <strong>{{ pagination.total }}</strong></span>
+  {% if pagination.next_url %}<a class="button secondary compact" href="{{ pagination.next_url }}">Next page <span>→</span></a>{% else %}<span class="mini-badge">End of results</span>{% endif %}
+</nav>
+{% endif %}

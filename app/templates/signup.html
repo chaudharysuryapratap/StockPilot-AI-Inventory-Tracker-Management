@@ -4,28 +4,40 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#EEF1F0">
-    <title>Set up StockPilot</title>
+    <title>Create your business · StockPilot</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   </head>
-  <body class="login-body">
-    <main class="login-card setup-card">
-      <a class="brand login-brand" href="{{ url_for('web.signup') }}"><span class="brand-mark"><b>SP</b></span><span class="brand-copy"><strong>StockPilot</strong><small>Inventory control</small></span></a>
-      <p class="eyebrow">FIRST-RUN SETUP</p>
-      <h1>Create the administrator account.</h1>
-      <p class="subhead">This account owns user access and keeps the existing inventory audit history attached.</p>
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
-      {% endwith %}
-      <form method="post" class="auth-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label>Workspace name<input name="workspace_name" maxlength="255" placeholder="FreshMart" autofocus></label>
-        <label>Your name<input name="name" maxlength="255" autocomplete="name" required></label>
-        <label>Email<input type="email" name="email" maxlength="255" autocomplete="email" required></label>
-        <label>Password<input type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" required><small>Use at least 10 characters.</small></label>
-        <label>Confirm password<input type="password" name="password_confirm" minlength="10" maxlength="128" autocomplete="new-password" required></label>
-        <button class="button primary" type="submit">Create admin account <span>→</span></button>
-      </form>
+  <body class="auth-body signup-body">
+    <div class="auth-orb auth-orb-one"></div><div class="auth-orb auth-orb-two"></div><div class="auth-orb auth-orb-three"></div>
+    <main class="auth-stage">
+      <a class="auth-brand" href="{{ url_for('web.login') }}"><span class="brand-mark"><b>SP</b></span><span><strong>StockPilot</strong><small>Inventory intelligence</small></span></a>
+      <section class="auth-frame signup-frame">
+        <div class="auth-copy signup-copy">
+          <span class="auth-kicker">SET UP IN MINUTES</span>
+          <h1>Build your inventory command centre.</h1>
+          <p>Create the business workspace, its unique platform identity, and your first warehouse in one guided step.</p>
+          <ol class="signup-steps"><li><b>1</b><span><strong>Business identity</strong><small>A unique username keeps every tenant distinct.</small></span></li><li><b>2</b><span><strong>Primary warehouse</strong><small>Your first physical stock location is ready immediately.</small></span></li><li><b>3</b><span><strong>Administrator</strong><small>You can invite Managers and Pickers after setup.</small></span></li></ol>
+        </div>
+        <div class="auth-card-wrap">
+          <article class="auth-card signup-card">
+            <div class="auth-tabs" role="navigation" aria-label="Account access"><a href="{{ url_for('web.login') }}">Sign in</a><a class="active" href="{{ url_for('web.signup') }}">Create account</a></div>
+            <div class="auth-card-head"><p class="eyebrow">NEW BUSINESS WORKSPACE</p><h2>Tell us about your operation</h2><p>All fields below create tenant-owned records.</p></div>
+            {% with messages = get_flashed_messages(with_categories=true) %}{% if messages %}<div class="auth-flashes">{% for category, message in messages %}<div class="flash {{ category }}"><span>{{ '✓' if category == 'success' else '!' }}</span>{{ message }}</div>{% endfor %}</div>{% endif %}{% endwith %}
+            <form method="post" class="auth-form signup-form" data-username-availability="{{ url_for('api.workspace_username_availability') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <fieldset><legend>Business</legend><div class="form-row"><label>Business name<input id="business-name" name="business_name" maxlength="255" autocomplete="organization" placeholder="FreshMart Retail" required autofocus></label><label>Business username<div class="input-shell"><span>@</span><input id="business-username" name="business_username" minlength="3" maxlength="63" pattern="[a-z0-9][a-z0-9-]{2,62}" placeholder="freshmart" autocapitalize="none" required></div><small id="business-username-status">Unique across StockPilot.</small></label></div></fieldset>
+              <fieldset><legend>Primary warehouse</legend><div class="form-row"><label>Warehouse name<input name="warehouse_name" maxlength="120" placeholder="Main Warehouse" required></label><label>Warehouse address<input name="warehouse_address" maxlength="255" autocomplete="street-address" placeholder="Street, city, state, postal code" required></label></div></fieldset>
+              <fieldset><legend>Administrator</legend><div class="form-row"><label>Your full name<input name="name" maxlength="255" autocomplete="name" required></label><label>Work email<input type="email" name="email" maxlength="255" autocomplete="email" required></label></div><div class="form-row"><label>Password<div class="input-shell"><span>⌁</span><input id="signup-password" type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" required><button class="password-toggle" type="button" data-password-toggle="signup-password" aria-label="Show password">Show</button></div><small>At least 10 characters.</small></label><label>Confirm password<input type="password" name="password_confirm" minlength="10" maxlength="128" autocomplete="new-password" required></label></div></fieldset>
+              <label class="auth-consent"><input type="checkbox" required> <span>I understand this creates a new isolated business workspace.</span></label>
+              <button class="button primary auth-submit" type="submit">Create workspace <span>→</span></button>
+            </form>
+            <p class="auth-switch">Already have an account? <a href="{{ url_for('web.login') }}">Sign in</a></p>
+          </article>
+        </div>
+      </section>
+      <p class="auth-footer">Your catalogue, users, integrations, and settings remain workspace-isolated.</p>
     </main>
+    <script src="{{ url_for('static', filename='auth.js') }}" defer></script>
     <script src="{{ url_for('static', filename='ui.js') }}" defer></script>
   </body>
 </html>
