@@ -6,15 +6,15 @@
   <div><p class="eyebrow">INBOUND PROCUREMENT</p><h2>Order, approve, receive, and match</h2><p class="subhead">Quantities are normalized to each product's base unit while retaining supplier packaging units.</p></div>
   <form method="post" action="{{ url_for('web.generate_purchase_order_drafts_form') }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button class="button" type="submit">Generate AI drafts</button>
+    <button class="button ai-button" type="submit">✦ Generate AI drafts</button>
   </form>
 </section>
 
 <section class="metric-grid">
   <article class="metric-card"><span>Open POs</span><strong>{{ orders|selectattr('status', 'in', ['draft','approved','partially_received'])|list|length }}</strong><small>Draft through partial receipt</small></article>
-  <article class="metric-card"><span>Near-expiry lots</span><strong>{{ recommendations.near_expiry|length }}</strong><small>Within {{ recommendations.settings.near_expiry_days }} days</small></article>
-  <article class="metric-card"><span>Dead stock</span><strong>{{ recommendations.dead_stock|length }}</strong><small>{{ recommendations.settings.dead_stock_days }}-day rule</small></article>
-  <article class="metric-card"><span>Forecast MAE</span><strong>{{ accuracy.mae if accuracy.mae is not none else '—' }}</strong><small>{{ accuracy.evaluated_forecasts }} evaluated forecasts</small></article>
+  <article class="metric-card critical"><span>Near-expiry lots</span><strong>{{ recommendations.near_expiry|length }}</strong><small>Within {{ recommendations.settings.near_expiry_days }} days</small></article>
+  <article class="metric-card critical"><span>Dead stock</span><strong>{{ recommendations.dead_stock|length }}</strong><small>{{ recommendations.settings.dead_stock_days }}-day rule</small></article>
+  <article class="metric-card ai"><span>Forecast MAE</span><strong>{{ accuracy.mae if accuracy.mae is not none else '—' }}</strong><small>{{ accuracy.evaluated_forecasts }} evaluated forecasts</small></article>
 </section>
 
 <section class="manage-grid procurement-tools">
@@ -33,7 +33,7 @@
         <label>Unit<input id="manual-po-unit" name="unit" maxlength="20" placeholder="Product base unit or configured pack" required></label>
       </div>
       <div class="form-row"><label>Unit cost<input type="number" name="unit_cost" min="0" step="0.01" value="0"></label><label>Note<input name="note" maxlength="500"></label></div>
-      <button class="button" type="submit">Create draft</button>
+      <button class="button primary" type="submit">Create draft</button>
     </form>
   </article>
   <article class="panel form-panel">
@@ -48,12 +48,21 @@
   </article>
 </section>
 
-<section class="panel">
+<section class="panel table-panel po-register">
   <div class="panel-header"><div><p class="eyebrow">ORDER REGISTER</p><h2>Ordered versus received</h2></div></div>
   {% if orders %}
+    <div class="po-controls" aria-label="Purchase order filters">
+      <input id="po-search" type="search" placeholder="Search PO, supplier, location…" aria-label="Search purchase orders">
+      <button class="po-filter active" type="button" data-po-filter="all">All</button>
+      <button class="po-filter" type="button" data-po-filter="draft">Draft</button>
+      <button class="po-filter" type="button" data-po-filter="approved">Approved</button>
+      <button class="po-filter" type="button" data-po-filter="partially_received">Partial</button>
+      <button class="po-filter" type="button" data-po-filter="received">Received</button>
+      <span class="po-results" id="po-results">{{ orders|length }} orders</span>
+    </div>
     <div class="po-list">
       {% for order in orders %}
-        <article class="po-card">
+        <article class="po-card" data-source="{{ order.source }}" data-status="{{ order.status }}" data-search="{{ order.po_uid }} {{ order.supplier.name|e }} {{ order.location.code|e }} {{ order.source }}">
           <header><div><strong>PO {{ order.po_uid[:8] }}</strong><small>{{ order.supplier.name }} → {{ order.location.code }} · {{ order.source|upper }}</small></div><span class="mini-badge">{{ order.status|replace('_',' ')|title }}</span></header>
           {% if order.ai_rationale %}<p class="form-help">{{ order.ai_rationale }}</p>{% endif %}
           <div class="table-wrap"><table><thead><tr><th>Product</th><th>Ordered</th><th>Received</th><th>Remaining</th></tr></thead><tbody>
@@ -78,8 +87,8 @@
 </section>
 
 <section class="content-grid">
-  <article class="panel"><div class="panel-header"><div><p class="eyebrow">EXPIRY CONTROL</p><h2>Near-expiry lots</h2></div></div>{% for row in recommendations.near_expiry %}<div class="recommendation"><div><strong>{{ row.sku }} · lot {{ row.lot_number }}</strong><small>{{ row.location }} · {{ row.quantity_on_hand }} units · expires {{ row.expiry_date }}</small></div><span class="mini-badge">{{ row.days_remaining }} days</span></div>{% else %}<p class="form-help">No lots are near expiry.</p>{% endfor %}</article>
-  <article class="panel"><div class="panel-header"><div><p class="eyebrow">AGEING</p><h2>Dead-stock candidates</h2></div></div>{% for row in recommendations.dead_stock %}<div class="recommendation"><div><strong>{{ row.sku }}</strong><small>{{ row.quantity_on_hand }} units · {% if row.last_sale_at %}last sold {{ row.last_sale_at[:10] }}{% else %}no recorded sales{% endif %}</small></div></div>{% else %}<p class="form-help">No stocked products meet the dead-stock rule.</p>{% endfor %}</article>
+  <article class="panel forecast-panel"><div class="panel-header"><div><p class="eyebrow critical-eyebrow">EXPIRY CONTROL</p><h2>Near-expiry lots</h2></div><a class="text-link" href="{{ url_for('web.products_page') }}">Open stock →</a></div>{% for row in recommendations.near_expiry %}<div class="recommendation needs-action"><div><strong>{{ row.sku }} · lot {{ row.lot_number }}</strong><small>{{ row.location }} · {{ row.quantity_on_hand }} units · expires {{ row.expiry_date }}</small></div><span class="risk-pill critical">{{ row.days_remaining }} days</span></div>{% else %}<div class="empty-state compact-empty"><span>✓</span><h3>No near-expiry lots</h3><p>Nothing falls inside the {{ recommendations.settings.near_expiry_days }}-day window.</p></div>{% endfor %}</article>
+  <article class="panel forecast-panel"><div class="panel-header"><div><p class="eyebrow">AGEING ACTIONS</p><h2>Dead-stock candidates</h2></div><a class="text-link" href="{{ url_for('web.reports_page') }}">Open report →</a></div>{% for row in recommendations.dead_stock %}<div class="recommendation"><div><strong>{{ row.sku }}</strong><small>{{ row.quantity_on_hand }} units · {% if row.last_sale_at %}last sold {{ row.last_sale_at[:10] }}{% else %}no recorded sales{% endif %}</small></div><span class="risk-pill watch">Review</span></div>{% else %}<div class="empty-state compact-empty"><span>✓</span><h3>No dead stock</h3><p>No stocked product currently meets the ageing rule.</p></div>{% endfor %}</article>
 </section>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='procurement.js') }}" defer></script>{% endblock %}

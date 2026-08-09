@@ -3,12 +3,13 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#EEF1F0">
     <title>Set up StockPilot</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
   </head>
   <body class="login-body">
     <main class="login-card setup-card">
-      <a class="brand login-brand" href="{{ url_for('web.signup') }}"><span class="brand-mark">SP</span><span>StockPilot <em>AI</em></span></a>
+      <a class="brand login-brand" href="{{ url_for('web.signup') }}"><span class="brand-mark"><b>SP</b></span><span class="brand-copy"><strong>StockPilot</strong><small>Inventory control</small></span></a>
       <p class="eyebrow">FIRST-RUN SETUP</p>
       <h1>Create the administrator account.</h1>
       <p class="subhead">This account owns user access and keeps the existing inventory audit history attached.</p>
@@ -25,5 +26,6 @@
         <button class="button primary" type="submit">Create admin account <span>→</span></button>
       </form>
     </main>
+    <script src="{{ url_for('static', filename='ui.js') }}" defer></script>
   </body>
 </html>

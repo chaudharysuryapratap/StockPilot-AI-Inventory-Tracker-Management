@@ -1,191 +1,166 @@
 {% extends "base.html" %}
 
-{% block title %}Overview · StockPilot AI{% endblock %}
-{% block heading %}Inventory, without the guesswork.{% endblock %}
+{% block title %}Overview · StockPilot{% endblock %}
+{% block heading %}{% if current_user.role == 'picker' %}Your shift at a glance.{% elif current_user.role == 'manager' %}Today’s inventory decisions.{% else %}Inventory command centre.{% endif %}{% endblock %}
 
 {% block content %}
-<section class="hero-row">
+<section class="hero-row dashboard-hero">
   <div>
-    <p class="subhead">Track every sale, catch risk early, and know exactly what to order.</p>
+    <p class="eyebrow">Inventory, without the guesswork.</p>
+    <p class="subhead">{% if current_user.role == 'picker' %}Move the next order accurately, scan exceptions, and keep the ledger current.{% else %}See demand, supply risk, expiry exposure, and the actions your team should take next.{% endif %}</p>
   </div>
-  <a class="button primary" href="{{ url_for('web.products_page') }}">View stock levels <span>→</span></a>
+  <div class="hero-actions">
+    {% if current_user.role == 'picker' %}
+      <a class="button primary" href="{{ url_for('web.picker_page') }}">Open my pick queue <span>→</span></a>
+      <a class="button secondary" href="{{ url_for('web.scanner_page') }}">Scan an item</a>
+    {% elif current_user.role == 'manager' %}
+      <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review AI orders</a>
+      <a class="button primary" href="{{ url_for('web.orders_page') }}">Manage today’s orders <span>→</span></a>
+    {% else %}
+      <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review AI orders</a>
+      <a class="button secondary" href="{{ url_for('web.users_page') }}">Manage team access</a>
+      <a class="button primary" href="{{ url_for('web.manage_page') }}">Create stock action <span>→</span></a>
+    {% endif %}
+  </div>
 </section>
 
 <section class="metric-grid" aria-label="Inventory summary">
-  <article class="metric-card blue">
-    <span class="metric-icon">◫</span>
-    <div>
-      <span class="metric-label">Active products</span>
-      <strong>{{ metrics.active_products }}</strong>
-      <small>Across {{ metrics.locations }} location{{ '' if metrics.locations == 1 else 's' }}</small>
-    </div>
+  <article class="metric-card">
+    <span class="metric-icon">▦</span>
+    <div><span class="metric-label">Active products</span><strong>{{ metrics.active_products }}</strong><small>Across {{ metrics.locations }} location{{ '' if metrics.locations == 1 else 's' }}</small></div>
   </article>
-  <article class="metric-card mint">
+  <article class="metric-card healthy">
     <span class="metric-icon">▥</span>
-    <div>
-      <span class="metric-label">Units on hand</span>
-      <strong>{{ '{:,}'.format(metrics.total_units) }}</strong>
-      <small>Current warehouse total</small>
-    </div>
+    <div><span class="metric-label">Units on hand</span><strong>{{ '{:,}'.format(metrics.total_units) }}</strong><small>Live ledger balance</small></div>
   </article>
-  <article class="metric-card amber">
-    <span class="metric-icon">△</span>
-    <div>
-      <span class="metric-label">Items needing action</span>
-      <strong>{{ metrics.items_at_risk }}</strong>
-      <small>Based on forecast + lead time</small>
-    </div>
+  <article class="metric-card critical">
+    <span class="metric-icon">!</span>
+    <div><span class="metric-label">Items needing action</span><strong>{{ metrics.items_at_risk }}</strong><small>Demand and stockout risk</small></div>
   </article>
-  <article class="metric-card violet">
+  <article class="metric-card ai">
     <span class="metric-icon">✦</span>
-    <div>
-      <span class="metric-label">Latest analysis</span>
-      <strong>{{ 'Ready' if insights else 'Pending' }}</strong>
-      <small>{% if insights %}Generated {{ insights[0].generated_at[:16]|replace('T', ' ') }} UTC{% else %}Run the analysis command{% endif %}</small>
-    </div>
+    <div><span class="metric-label">Forecast status</span><strong>{{ 'Ready' if insights else 'Pending' }}</strong><small>{% if insights %}{{ insights|length }} model recommendations{% else %}Waiting for analysis{% endif %}</small></div>
   </article>
 </section>
 
-<section class="content-grid">
+{% if current_user.role != 'picker' %}
+<section class="insight-visuals" aria-label="Demand and forecast accuracy">
+  <article class="panel chart-panel ai-surface">
+    <div class="panel-header">
+      <div><p class="eyebrow ai-eyebrow">AI DEMAND SIGNAL</p><h2>Demand compared with reorder need</h2><p class="panel-note">Daily forecast and recommended replenishment by SKU</p></div>
+      <div class="chart-toolbar" aria-label="Chart filters">
+        <button class="chart-filter active" type="button" data-chart-filter="all">All</button>
+        <button class="chart-filter" type="button" data-chart-filter="risk">At risk</button>
+        <button class="chart-filter" type="button" data-chart-filter="covered">Covered</button>
+      </div>
+    </div>
+    <div id="forecast-chart" class="chart-canvas" role="img" aria-label="Forecast demand and recommended reorder quantities">
+      {% for insight in insights[:8] %}
+        <i class="chart-data" hidden data-label="{{ insight.product|e }}" data-sku="{{ insight.sku|e }}" data-demand="{{ insight.daily_demand }}" data-reorder="{{ insight.recommended_reorder_quantity }}" data-risk="{{ 'risk' if insight.recommended_reorder_quantity > 0 else 'covered' }}"></i>
+      {% endfor %}
+      {% if not insights %}<div class="empty-state"><span>✦</span><h3>No demand signal yet</h3><p>Run inventory analysis after sales history is available.</p></div>{% endif %}
+    </div>
+  </article>
+
+  <aside class="panel chart-panel accuracy-panel">
+    <div class="panel-header"><div><p class="eyebrow ai-eyebrow">MODEL QUALITY</p><h2>Forecast accuracy</h2></div><span class="mini-badge ai-badge">Live tracking</span></div>
+    <div class="accuracy-gauge" data-mape="{{ forecast_accuracy.mape if forecast_accuracy.mape is not none else '' }}">
+      <div class="gauge-ring"><span>—</span></div>
+      <small>Accuracy score derived from mean absolute percentage error</small>
+    </div>
+    <dl class="accuracy-facts">
+      <div><dt>Evaluated</dt><dd>{{ forecast_accuracy.evaluated_forecasts }}</dd></div>
+      <div><dt>MAE</dt><dd>{{ forecast_accuracy.mae if forecast_accuracy.mae is not none else '—' }}</dd></div>
+      <div><dt>Bias</dt><dd>{{ forecast_accuracy.bias if forecast_accuracy.bias is not none else '—' }}</dd></div>
+    </dl>
+  </aside>
+</section>
+{% endif %}
+
+<section class="content-grid dashboard-decisions">
   <article class="panel forecast-panel">
     <div class="panel-header">
-      <div>
-        <p class="eyebrow">PRIORITY QUEUE</p>
-        <h2>Smart reorder recommendations</h2>
-      </div>
-      <span class="mini-badge">{{ insights|length }} analyzed</span>
+      <div><p class="eyebrow ai-eyebrow">PRIORITY QUEUE</p><h2>{% if current_user.role == 'picker' %}Stock risks to watch{% else %}Smart reorder recommendations{% endif %}</h2></div>
+      <span class="mini-badge ai-badge">{{ insights|length }} analyzed</span>
     </div>
-
     {% if insights %}
       <div class="recommendation-list">
-      {% for insight in insights[:4] %}
+      {% for insight in insights[:5] %}
         <article class="recommendation {% if insight.recommended_reorder_quantity > 0 %}needs-action{% endif %}">
           <div class="recommendation-main">
             <span class="risk-dot {% if insight.recommended_reorder_quantity > 0 %}high{% else %}safe{% endif %}"></span>
-            <div>
-              <h3>{{ insight.product }}</h3>
-              <p>{{ insight.location }} · {{ insight.current_stock }} {{ insight.unit }} available · {{ insight.daily_demand }} / day forecast</p>
-            </div>
+            <div><h3>{{ insight.product }}</h3><p>{{ insight.location }} · {{ insight.current_stock }} {{ insight.unit }} available · {{ insight.daily_demand }} / day</p></div>
           </div>
           <div class="recommendation-order">
-            {% if insight.recommended_reorder_quantity > 0 %}
-              <span>Order</span>
-              <strong>{{ insight.recommended_reorder_quantity }} {{ insight.unit }}</strong>
-            {% else %}
-              <span class="okay">Covered</span>
-            {% endif %}
+            {% if insight.recommended_reorder_quantity > 0 %}<span>{% if current_user.role == 'picker' %}Risk{% else %}Order{% endif %}</span><strong>{% if current_user.role == 'picker' %}Low cover{% else %}{{ insight.recommended_reorder_quantity }} {{ insight.unit }}{% endif %}</strong>{% else %}<span class="okay">Healthy</span>{% endif %}
           </div>
         </article>
       {% endfor %}
       </div>
     {% else %}
-      <div class="empty-state">
-        <span>✦</span>
-        <h3>No forecast yet</h3>
-        <p>Load the demo data, then run <code>flask analyze-inventory</code>.</p>
-      </div>
+      <div class="empty-state"><span>✦</span><h3>No forecast yet</h3><p>Forecast recommendations will appear here once inventory analysis runs.</p></div>
     {% endif %}
   </article>
 
-  <aside class="panel how-panel">
-    <p class="eyebrow">HOW IT WORKS</p>
-    <h2>From sale to decision.</h2>
-    <ol class="steps">
-      <li><b>1</b><span>POS sends a signed sale event.</span></li>
-      <li><b>2</b><span>Stock changes in one database transaction.</span></li>
-      <li><b>3</b><span>Daily analysis predicts demand and reorder quantity.</span></li>
-      <li><b>4</b><span>SES delivers the action report to the owner.</span></li>
-    </ol>
-    <a href="{{ url_for('api.health') }}" class="text-link" target="_blank">Check service health <span>↗</span></a>
+  {% if current_user.role == 'picker' %}
+  <aside class="panel shift-panel">
+    <p class="eyebrow">PICKER WORKFLOW</p><h2>Keep every movement traceable.</h2>
+    <ol class="steps"><li><b>1</b><span>Open the next order in your queue.</span></li><li><b>2</b><span>Follow the exact location and bin.</span></li><li><b>3</b><span>Confirm each line after the physical pick.</span></li><li><b>4</b><span>Pack and hand off shipment approval.</span></li></ol>
+    <a href="{{ url_for('web.picker_page') }}" class="text-link">Start next order <span>→</span></a>
   </aside>
+  {% else %}
+  <aside class="panel risk-actions-panel">
+    <div class="panel-header"><div><p class="eyebrow critical-eyebrow">STOCK AGE & EXPIRY</p><h2>Prevent avoidable loss</h2></div></div>
+    <div class="expiry-action-grid">
+      {% for row in recommendations.near_expiry[:2] %}
+        <article class="expiry-action critical"><strong>{{ row.sku }} · Lot {{ row.lot_number }}</strong><small>{{ row.quantity_on_hand }} units at {{ row.location }} · {{ row.days_remaining }} days left</small></article>
+      {% endfor %}
+      {% for row in recommendations.dead_stock[:2] %}
+        <article class="expiry-action"><strong>{{ row.sku }} · Dead stock</strong><small>{{ row.quantity_on_hand }} units · {% if row.last_sale_at %}last sold {{ row.last_sale_at[:10] }}{% else %}no recorded sale{% endif %}</small></article>
+      {% endfor %}
+      {% if not recommendations.near_expiry and not recommendations.dead_stock %}<div class="empty-state compact-empty"><span>✓</span><h3>No ageing action needed</h3><p>There are no near-expiry or dead-stock candidates.</p></div>{% endif %}
+    </div>
+    <a href="{{ url_for('web.purchase_orders_page') }}" class="text-link">Open expiry controls <span>→</span></a>
+  </aside>
+  {% endif %}
 </section>
 
 <section class="panel table-panel">
-  <div class="panel-header">
-    <div>
-      <p class="eyebrow">FORECAST DETAIL</p>
-      <h2>What needs your attention</h2>
-    </div>
-    <span class="muted">Confidence reflects available sales history</span>
-  </div>
+  <div class="panel-header"><div><p class="eyebrow ai-eyebrow">FORECAST DETAIL</p><h2>What needs attention</h2></div><span class="muted">Select a column to sort</span></div>
   <div class="table-wrap">
     <table>
-      <thead>
-        <tr><th>Product</th><th>Location</th><th>On hand</th><th>Forecast</th><th>Projected stockout</th><th>Recommendation</th><th>Confidence</th></tr>
-      </thead>
+      <thead><tr><th>Product</th><th>Location</th><th>On hand</th><th>Forecast</th><th>Projected stockout</th><th>Risk</th><th>Confidence</th></tr></thead>
       <tbody>
         {% for insight in insights %}
         <tr>
-          <td><strong>{{ insight.product }}</strong><small>{{ insight.sku }}</small></td>
-          <td><span class="location-tag">{{ insight.location }}</span></td>
-          <td>{{ insight.current_stock }} {{ insight.unit }} available</td>
-          <td>{{ insight.daily_demand }} / day</td>
-          <td>{{ insight.expected_stockout_at[:10] if insight.expected_stockout_at else 'No projected stockout' }}</td>
-          <td>
-            {% if insight.recommended_reorder_quantity > 0 %}
-              <span class="action-tag">Order {{ insight.recommended_reorder_quantity }}</span>
-            {% else %}
-              <span class="covered-tag">Covered</span>
-            {% endif %}
-          </td>
+          <td><strong>{{ insight.product }}</strong><small>{{ insight.sku }}</small></td><td><span class="location-tag">{{ insight.location }}</span></td><td>{{ insight.current_stock }} {{ insight.unit }}</td><td>{{ insight.daily_demand }} / day</td><td>{{ insight.expected_stockout_at[:10] if insight.expected_stockout_at else 'No projected stockout' }}</td>
+          <td>{% if insight.recommended_reorder_quantity > 0 %}<span class="risk-pill critical">Order {{ insight.recommended_reorder_quantity }}</span>{% else %}<span class="risk-pill healthy">Covered</span>{% endif %}</td>
           <td><span class="confidence"><i style="width: {{ insight.confidence }}%"></i></span>{{ insight.confidence }}%</td>
         </tr>
-        {% else %}
-        <tr><td colspan="7" class="empty-row">No analysis is available yet.</td></tr>
-        {% endfor %}
+        {% else %}<tr><td colspan="7" class="empty-row">No analysis is available yet.</td></tr>{% endfor %}
       </tbody>
     </table>
   </div>
 </section>
 
 <section class="panel explainability-panel">
-  <div class="panel-header">
-    <div>
-      <p class="eyebrow">AI EXPLAINABILITY</p>
-      <h2>Why the forecast reached each recommendation</h2>
-    </div>
-    <span class="muted">Stored inputs from the same forecast run</span>
-  </div>
-  {% if insights %}
-    <div class="explainability-grid">
-      {% for insight in insights %}
-        <details class="explainability-card" {% if loop.first %}open{% endif %}>
-          <summary>
-            <span><strong>{{ insight.product }}</strong><small>{{ insight.sku }} · {{ insight.location }}</small></span>
-            <span class="mini-badge">{{ insight.confidence }}% confidence</span>
-          </summary>
-          <p class="explainability-narrative">{{ insight.narrative }}</p>
-          {% if insight.explainability %}
-            <dl class="factor-grid">
-              {% for factor in insight.explainability %}
-                <div><dt>{{ factor.label }}</dt><dd>{{ factor.display }}</dd></div>
-              {% endfor %}
-            </dl>
-            <p class="factor-method">Model <code>{{ insight.factors.model_version }}</code> blends the recent 7-day average ({{ insight.factors.recent_weight_percent }}%) with the longer baseline ({{ insight.factors.baseline_weight_percent }}%), then applies the weekday multiplier.</p>
-          {% else %}
-            <p class="form-help legacy-explanation">This result predates Sprint 6. Run inventory analysis again to store its calculation factors.</p>
-          {% endif %}
-        </details>
-      {% endfor %}
-    </div>
-  {% else %}
-    <div class="empty-state"><span>✦</span><h3>No forecast factors yet</h3><p>Run inventory analysis to create an explainable forecast.</p></div>
-  {% endif %}
+  <div class="panel-header"><div><p class="eyebrow ai-eyebrow">AI EXPLAINABILITY</p><h2>Why the forecast reached each recommendation</h2></div><span class="muted">Inputs stored with the forecast run</span></div>
+  {% if insights %}<div class="explainability-grid">
+    {% for insight in insights %}<details class="explainability-card" {% if loop.first %}open{% endif %}><summary><span><strong>{{ insight.product }}</strong><small>{{ insight.sku }} · {{ insight.location }}</small></span><span class="mini-badge ai-badge">{{ insight.confidence }}% confidence</span></summary><p class="explainability-narrative">{{ insight.narrative }}</p>{% if insight.explainability %}<dl class="factor-grid">{% for factor in insight.explainability %}<div><dt>{{ factor.label }}</dt><dd>{{ factor.display }}</dd></div>{% endfor %}</dl><p class="factor-method">Model <code>{{ insight.factors.model_version }}</code> blends the recent 7-day average ({{ insight.factors.recent_weight_percent }}%) with the longer baseline ({{ insight.factors.baseline_weight_percent }}%), then applies the weekday multiplier.</p>{% else %}<p class="form-help legacy-explanation">Run inventory analysis again to store calculation factors for this legacy result.</p>{% endif %}</details>{% endfor %}
+  </div>{% else %}<div class="empty-state"><span>✦</span><h3>No forecast factors yet</h3><p>Explanations will appear with the next inventory analysis.</p></div>{% endif %}
 </section>
 
-<section class="panel assistant-panel" id="inventory-assistant" data-chat-url="{{ url_for('api.dashboard_chat_api') }}" data-csrf-token="{{ csrf_token() }}">
-  <div class="panel-header">
-    <div><p class="eyebrow">DASHBOARD ASSISTANT</p><h2>Ask about demand, stock risk, expiry, or forecast accuracy</h2></div>
-    <span class="muted">Answers are grounded in the current workspace snapshot</span>
+<section class="panel assistant-panel ai-surface" id="inventory-assistant" data-chat-url="{{ url_for('api.dashboard_chat_api') }}" data-csrf-token="{{ csrf_token() }}">
+  <div class="assistant-intro">
+    <span class="assistant-mark">✦</span>
+    <div><p class="eyebrow ai-eyebrow">STOCKPILOT ASSISTANT</p><h2>Ask your live inventory</h2><p class="panel-note">Answers use this workspace’s demand, forecast accuracy, expiry, and stock-risk data.</p></div>
   </div>
-  <div id="assistant-messages" class="assistant-messages" aria-live="polite">
-    <p class="assistant-answer">Try “What demand changed?”, “What is near expiry?”, or “Which stock is most at risk?”</p>
+  <div class="assistant-prompts" aria-label="Suggested questions">
+    <button type="button" data-assistant-prompt="What demand changed?">Demand changes</button><button type="button" data-assistant-prompt="What stock is most at risk?">Stock risks</button><button type="button" data-assistant-prompt="What is near expiry?">Near expiry</button><button type="button" data-assistant-prompt="How accurate are our forecasts?">Forecast accuracy</button>
   </div>
-  <form id="assistant-form" class="assistant-form">
-    <label class="sr-only" for="assistant-question">Inventory question</label>
-    <input id="assistant-question" maxlength="1000" placeholder="Ask StockPilot about this dashboard…" required>
-    <button class="button" type="submit">Ask</button>
-  </form>
+  <div id="assistant-messages" class="assistant-messages" aria-live="polite"><p class="assistant-answer">I’m grounded in the latest snapshot. Choose a question above or ask your own.</p></div>
+  <form id="assistant-form" class="assistant-form"><label class="sr-only" for="assistant-question">Inventory question</label><input id="assistant-question" maxlength="1000" placeholder="Ask about demand, risk, expiry, or accuracy…" required><button class="button ai-button" type="submit">Ask StockPilot</button></form>
 </section>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='dashboard-chat.js') }}" defer></script>{% endblock %}
+
+{% block scripts %}<script src="{{ url_for('static', filename='dashboard-viz.js') }}" defer></script><script src="{{ url_for('static', filename='dashboard-chat.js') }}" defer></script>{% endblock %}
