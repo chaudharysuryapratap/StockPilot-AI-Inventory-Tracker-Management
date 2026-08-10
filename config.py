@@ -18,6 +18,7 @@ class Config:
     """Runtime configuration loaded from environment variables."""
 
     APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+    ASSET_VERSION = os.getenv("ASSET_VERSION", "20260810.3").strip() or "20260810.3"
     AUTO_CREATE_SCHEMA = _as_bool(
         os.getenv("AUTO_CREATE_SCHEMA"), default=APP_ENV != "production"
     )

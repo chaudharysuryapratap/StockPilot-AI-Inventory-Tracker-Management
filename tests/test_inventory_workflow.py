@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from io import BytesIO
 
 from datetime import timedelta
 
 import pytest
 
 from app import create_app, db
-from app.models import DemandInsight, Product, Sale, SaleItem, StockLevel, Supplier, utcnow
+from app.models import (
+    DemandInsight,
+    InventoryMovement,
+    Product,
+    Sale,
+    SaleItem,
+    StockLevel,
+    Supplier,
+    utcnow,
+)
 from app.services.forecast import ForecastService
 
 
@@ -121,6 +131,36 @@ def test_dashboard_renders_after_analysis(client, app, seeded_catalog):
     assert health.status_code == 200
     assert health.json["database"] == "ok"
     assert "Content-Security-Policy" in response.headers
+
+
+def test_csv_import_can_record_an_audited_opening_warehouse_balance(
+    client, app, seeded_catalog
+):
+    csv_content = (
+        "sku,name,category,unit_of_measure,cost_price,sell_price,"
+        "reorder_point,safety_stock,location_code,bin_code,quantity_on_hand\n"
+        "CSV-OPEN,Imported opening stock,General,units,4.50,7.00,2,1,TEST,,7.50\n"
+    ).encode("utf-8")
+
+    response = client.post(
+        "/api/products/import",
+        headers={"X-Internal-Token": "test-internal-token"},
+        data={"file": (BytesIO(csv_content), "opening-stock.csv")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    assert response.json["created"] == 1
+    assert response.json["inventory_updated"] == 1
+    with app.app_context():
+        product = Product.query.filter_by(sku="CSV-OPEN").one()
+        stock = StockLevel.query.filter_by(product_id=product.id).one()
+        movement = InventoryMovement.query.filter_by(
+            product_id=product.id, reason="csv_import"
+        ).one()
+        assert stock.quantity_on_hand == Decimal("7.50")
+        assert movement.quantity_delta == Decimal("7.50")
+        assert movement.user_id is not None
 
 
 def test_staff_sign_in_protects_management_forms(client, app):

@@ -46,7 +46,8 @@ flowchart TD
 | Warehouse management | One Admin-only warehouse and bin section with validated activation and capacity safeguards |
 | Product catalogue | Validated add/edit/archive/restore operations with SKU, barcode, category, UoM, prices, perishability, and supplier fields |
 | Supplier directory | Workspace-scoped supplier CRUD with contacts, lead times, payment terms, archive/restore, and protected product relationships |
-| CSV bulk import | Downloadable fixed-format template plus atomic create/update import with row-level validation errors and a 1,000-row default limit |
+| CSV bulk import | Downloadable fixed-format template plus atomic product create/update and optional audited opening warehouse/bin balances, with row-level validation errors and a 1,000-row default limit |
+| Unified inbound workflow | One **Add inventory** journey connects product creation/CSV import, supplier and warehouse selection, manual or AI-assisted purchase orders, and batch-aware receiving without mixing catalogue, order, and receipt records |
 | Auditability | POS sales, order shipments, adjustments, and paired transfers record location, bin, reference, timestamp, and user attribution |
 | Named users and roles | Password-hashed Admin, Manager, Picker, and read-only Viewer accounts with server-enforced permissions and CSRF-protected browser actions |
 | SaaS business isolation | Unique business usernames, one-business-per-account memberships, tenant settings, and secret-reference-only integration records |
@@ -259,7 +260,7 @@ curl -X POST http://127.0.0.1:5000/api/sales-orders/42/returns \
 
 ### Product CSV format
 
-Only `sku` and `name` are required. The accepted optional columns are `barcode`, `category`, `unit_of_measure`, `cost_price`, `sell_price`, `reorder_point`, `safety_stock`, `is_perishable`, and `preferred_supplier_id`. Admins and Managers can download the fixed-format template from **Inventory setup → Import products from CSV**; the repository example is [`examples/products-import.csv`](examples/products-import.csv).
+Only `sku` and `name` are required. Product columns also include `barcode`, `category`, `unit_of_measure`, `cost_price`, `sell_price`, `reorder_point`, `safety_stock`, `is_perishable`, and `preferred_supplier_id`. Optional `location_code`, `bin_code`, and `quantity_on_hand` columns can establish audited opening balances during onboarding; normal deliveries still go through purchase-order receiving so lots and manufacture/expiry dates stay traceable. Admins and Managers can download the fixed-format template from **Add inventory & purchasing → Catalogue**; the repository example is [`examples/products-import.csv`](examples/products-import.csv).
 
 The import is atomic: if one row fails validation, no rows are committed. Send multipart form data with a field named `file`. Add `update_existing=true` to update matching SKUs; otherwise an existing SKU is reported as an error.
 

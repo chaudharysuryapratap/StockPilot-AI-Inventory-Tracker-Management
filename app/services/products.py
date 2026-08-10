@@ -10,7 +10,16 @@ from typing import Mapping
 from sqlalchemy.exc import IntegrityError
 
 from app import db
-from app.models import Product, Supplier, utcnow
+from app.models import (
+    Bin,
+    InventoryLocation,
+    InventoryMovement,
+    Product,
+    StockLevel,
+    Supplier,
+    User,
+    utcnow,
+)
 
 
 SKU_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9._/-]*$")
@@ -92,6 +101,23 @@ def _boolean(value: object, field_name: str) -> bool:
     if normalized in {"", "0", "false", "no", "n", "off"}:
         return False
     raise ValueError("must be true or false")
+
+
+def _stock_quantity(value: object) -> Decimal:
+    """Validate an imported absolute on-hand balance."""
+
+    try:
+        quantity = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as error:
+        raise ValueError("must be a non-negative number with at most 2 decimals") from error
+    if (
+        not quantity.is_finite()
+        or quantity < 0
+        or quantity > Decimal("9999999999.99")
+        or quantity.as_tuple().exponent < -2
+    ):
+        raise ValueError("must be between 0 and 9999999999.99 with at most 2 decimals")
+    return quantity.quantize(Decimal("0.01"))
 
 
 class ProductService:
@@ -367,6 +393,7 @@ def serialize_product(product: Product, *, include_sensitive: bool = True) -> di
 class ProductImportResult:
     created: int = 0
     updated: int = 0
+    inventory_updated: int = 0
     rows_read: int = 0
     committed: bool = False
     errors: list[dict] = field(default_factory=list)
@@ -375,6 +402,7 @@ class ProductImportResult:
         return {
             "created": self.created,
             "updated": self.updated,
+            "inventory_updated": self.inventory_updated,
             "rows_read": self.rows_read,
             "committed": self.committed,
             "errors": self.errors,
@@ -382,8 +410,20 @@ class ProductImportResult:
 
 
 class ProductCSVImporter:
-    HEADER_ALIASES = {"unit": "unit_of_measure", "supplier_id": "preferred_supplier_id"}
-    TEMPLATE_HEADERS = (
+    HEADER_ALIASES = {
+        "unit": "unit_of_measure",
+        "supplier_id": "preferred_supplier_id",
+        "warehouse": "location_code",
+        "warehouse_code": "location_code",
+        "location": "location_code",
+        "bin": "bin_code",
+        "quantity": "quantity_on_hand",
+        "stock": "quantity_on_hand",
+        "stock_quantity": "quantity_on_hand",
+        "opening_stock": "quantity_on_hand",
+        "initial_stock": "quantity_on_hand",
+    }
+    PRODUCT_FIELDS = (
         "sku",
         "barcode",
         "name",
@@ -396,6 +436,8 @@ class ProductCSVImporter:
         "is_perishable",
         "preferred_supplier_id",
     )
+    INVENTORY_FIELDS = ("location_code", "bin_code", "quantity_on_hand")
+    TEMPLATE_HEADERS = PRODUCT_FIELDS + INVENTORY_FIELDS
     IMPORTABLE_FIELDS = set(TEMPLATE_HEADERS)
 
     @staticmethod
@@ -418,6 +460,9 @@ class ProductCSVImporter:
                 "safety_stock": "5",
                 "is_perishable": "false",
                 "preferred_supplier_id": "",
+                "location_code": "MAIN",
+                "bin_code": "",
+                "quantity_on_hand": "25",
             }
         )
         return output.getvalue().encode("utf-8-sig")
@@ -429,6 +474,7 @@ class ProductCSVImporter:
         update_existing: bool = False,
         max_rows: int = 1000,
         workspace_id: int | None = None,
+        actor: User | None = None,
     ) -> ProductImportResult:
         result = ProductImportResult()
         try:
@@ -451,6 +497,22 @@ class ProductCSVImporter:
                 normalized, normalized
             )
         header_values = set(canonical_headers.values())
+        duplicate_headers = sorted(
+            value
+            for value in header_values
+            if list(canonical_headers.values()).count(value) > 1
+        )
+        if duplicate_headers:
+            result.errors.append(
+                {
+                    "row": 1,
+                    "errors": {
+                        "headers": "multiple columns map to: "
+                        + ", ".join(duplicate_headers)
+                    },
+                }
+            )
+            return result
         missing_headers = {"sku", "name"} - header_values
         if missing_headers:
             result.errors.append(
@@ -468,6 +530,18 @@ class ProductCSVImporter:
         seen_barcodes: set[str] = set()
         pending_created = 0
         pending_updated = 0
+        pending_inventory_updated = 0
+
+        active_locations = (
+            InventoryLocation.query.filter_by(
+                workspace_id=workspace_id, is_active=True
+            )
+            .order_by(InventoryLocation.id)
+            .all()
+            if workspace_id is not None
+            else []
+        )
+        locations_by_code = {location.code.upper(): location for location in active_locations}
 
         try:
             for row_number, raw_row in enumerate(reader, start=2):
@@ -489,6 +563,10 @@ class ProductCSVImporter:
                     continue
                 result.rows_read += 1
                 row_errors: dict[str, str] = {}
+                inventory_payload = {
+                    field: payload.pop(field, "")
+                    for field in ProductCSVImporter.INVENTORY_FIELDS
+                }
                 sku = str(payload.get("sku", "")).strip().upper()
                 barcode = str(payload.get("barcode", "")).strip()
                 if sku and sku in seen_skus:
@@ -498,6 +576,44 @@ class ProductCSVImporter:
                 seen_skus.add(sku)
                 if barcode:
                     seen_barcodes.add(barcode)
+
+                raw_quantity = str(inventory_payload.get("quantity_on_hand", "")).strip()
+                location_code = str(inventory_payload.get("location_code", "")).strip().upper()
+                bin_code = str(inventory_payload.get("bin_code", "")).strip().upper()
+                target_quantity: Decimal | None = None
+                location: InventoryLocation | None = None
+                bin_record: Bin | None = None
+                if raw_quantity:
+                    try:
+                        target_quantity = _stock_quantity(raw_quantity)
+                    except ValueError as error:
+                        row_errors["quantity_on_hand"] = str(error)
+                    if not location_code:
+                        if len(active_locations) == 1:
+                            location = active_locations[0]
+                            location_code = location.code.upper()
+                        else:
+                            row_errors["location_code"] = (
+                                "is required when quantity_on_hand is provided"
+                            )
+                    else:
+                        location = locations_by_code.get(location_code)
+                        if location is None:
+                            row_errors["location_code"] = (
+                                f"active warehouse '{location_code}' was not found"
+                            )
+                    if bin_code and location is not None:
+                        bin_record = Bin.query.filter_by(
+                            location_id=location.id, code=bin_code, is_active=True
+                        ).first()
+                        if bin_record is None:
+                            row_errors["bin_code"] = (
+                                f"active bin '{bin_code}' was not found at {location.code}"
+                            )
+                elif location_code or bin_code:
+                    row_errors["quantity_on_hand"] = (
+                        "is required when a warehouse or bin is provided"
+                    )
 
                 if row_errors:
                     result.errors.append({"row": row_number, "errors": row_errors})
@@ -509,7 +625,7 @@ class ProductCSVImporter:
                 existing = existing_query.first() if sku else None
                 try:
                     if existing and update_existing:
-                        ProductService.update(
+                        product = ProductService.update(
                             existing,
                             payload,
                             commit=False,
@@ -517,14 +633,95 @@ class ProductCSVImporter:
                         )
                         pending_updated += 1
                     else:
-                        ProductService.create(
+                        product = ProductService.create(
                             payload,
                             commit=False,
                             workspace_id=workspace_id,
                         )
                         pending_created += 1
+
+                    if target_quantity is not None and location is not None:
+                        db.session.flush()
+                        stock = (
+                            StockLevel.query.filter_by(
+                                product_id=product.id,
+                                location_id=location.id,
+                                bin_id=bin_record.id if bin_record else None,
+                            )
+                            .with_for_update()
+                            .first()
+                        )
+                        current_quantity = Decimal(
+                            stock.quantity_on_hand if stock is not None else 0
+                        )
+                        reserved_quantity = Decimal(
+                            stock.quantity_reserved if stock is not None else 0
+                        )
+                        if target_quantity < reserved_quantity:
+                            row_errors["quantity_on_hand"] = (
+                                f"cannot be below the reserved quantity {reserved_quantity}"
+                            )
+                        elif bin_record is not None and bin_record.capacity is not None:
+                            bin_total = sum(
+                                (
+                                    Decimal(row.quantity_on_hand or 0)
+                                    for row in StockLevel.query.filter_by(
+                                        bin_id=bin_record.id
+                                    ).all()
+                                ),
+                                start=Decimal("0.00"),
+                            )
+                            projected_total = bin_total - current_quantity + target_quantity
+                            if projected_total > Decimal(bin_record.capacity):
+                                row_errors["quantity_on_hand"] = (
+                                    f"would exceed bin capacity {bin_record.capacity}"
+                                )
+
+                        if not row_errors:
+                            if stock is None:
+                                stock = StockLevel(
+                                    product=product,
+                                    location=location,
+                                    bin=bin_record,
+                                    quantity_on_hand=Decimal("0.00"),
+                                    quantity_reserved=Decimal("0.00"),
+                                )
+                                db.session.add(stock)
+                            delta = target_quantity - current_quantity
+                            if delta:
+                                if delta < 0:
+                                    from app.services.procurement import consume_tracked_lots
+
+                                    consume_tracked_lots(
+                                        workspace_id=workspace_id,
+                                        product_id=product.id,
+                                        location_id=location.id,
+                                        bin_id=bin_record.id if bin_record else None,
+                                        quantity=-delta,
+                                    )
+                                stock.quantity_on_hand = target_quantity
+                                stock.updated_at = utcnow()
+                                db.session.add(
+                                    InventoryMovement(
+                                        product=product,
+                                        location=location,
+                                        bin=bin_record,
+                                        user=actor,
+                                        movement_type="adjustment",
+                                        quantity_delta=delta,
+                                        reason="csv_import",
+                                        reference_type="csv_import",
+                                        reference_id=f"row-{row_number}",
+                                        note="On-hand balance set by catalogue CSV import",
+                                    )
+                                )
+                                pending_inventory_updated += 1
                 except ProductValidationError as error:
                     result.errors.append({"row": row_number, "errors": error.errors})
+                    continue
+
+                if row_errors:
+                    result.errors.append({"row": row_number, "errors": row_errors})
         except csv.Error as error:
             result.errors.append(
                 {"row": result.rows_read + 2, "errors": {"file": f"invalid CSV: {error}"}}
@@ -548,5 +745,6 @@ class ProductCSVImporter:
 
         result.created = pending_created
         result.updated = pending_updated
+        result.inventory_updated = pending_inventory_updated
         result.committed = True
         return result

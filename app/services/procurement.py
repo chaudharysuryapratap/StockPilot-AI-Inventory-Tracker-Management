@@ -347,7 +347,9 @@ class PurchaseOrderService:
             purchase_order_id=order.id, external_id=external_id
         ).first()
         if existing:
-            requested: dict[int, tuple[Decimal, str, str | None]] = {}
+            requested: dict[
+                int, tuple[Decimal, str, str | None, date | None, date | None]
+            ] = {}
             for index, raw in enumerate(raw_items, start=1):
                 if not isinstance(raw, Mapping):
                     raise ProcurementError(f"receipt item {index} must be an object")
@@ -362,12 +364,16 @@ class PurchaseOrderService:
                     base_quantity,
                     unit,
                     _text(raw.get("lot_number"), "lot_number", 100),
+                    _date(raw.get("manufactured_at"), "manufactured_at"),
+                    _date(raw.get("expiry_date"), "expiry_date"),
                 )
             recorded = {
                 row.purchase_order_item_id: (
                     Decimal(row.quantity_received),
                     row.received_unit,
                     row.inventory_lot.lot_number if row.inventory_lot else None,
+                    row.inventory_lot.manufactured_at if row.inventory_lot else None,
+                    row.inventory_lot.expiry_date if row.inventory_lot else None,
                 )
                 for row in existing.items
             }
@@ -413,6 +419,10 @@ class PurchaseOrderService:
             lot_number = _text(raw.get("lot_number"), "lot_number", 100)
             expiry_date = _date(raw.get("expiry_date"), "expiry_date")
             manufactured_at = _date(raw.get("manufactured_at"), "manufactured_at")
+            if (manufactured_at or expiry_date) and not lot_number:
+                raise ProcurementError(
+                    "lot_number is required when manufacturing or expiry dates are recorded"
+                )
             if item.product.is_perishable and (not lot_number or not expiry_date):
                 raise ProcurementError(
                     f"lot_number and expiry_date are required for perishable product {item.product.sku}"

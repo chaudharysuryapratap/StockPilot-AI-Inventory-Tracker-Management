@@ -116,6 +116,21 @@ def test_unit_conversion_purchase_approval_partial_receiving_and_lot_tracking(
     assert first.status_code == 201 and first.json["created"] is True
     assert repeat.status_code == 200 and repeat.json["created"] is False
 
+    conflicting_repeat = client.post(
+        f"/api/purchase-orders/{order_id}/receipts",
+        headers=INTERNAL_HEADERS,
+        json={
+            **first_payload,
+            "items": [
+                {
+                    **first_payload["items"][0],
+                    "expiry_date": (date.today() + timedelta(days=21)).isoformat(),
+                }
+            ],
+        },
+    )
+    assert conflicting_repeat.status_code == 409
+
     excessive = client.post(
         f"/api/purchase-orders/{order_id}/receipts",
         headers=INTERNAL_HEADERS,
@@ -168,7 +183,10 @@ def test_unit_conversion_purchase_approval_partial_receiving_and_lot_tracking(
 
     with app.app_context():
         assert StockLevel.query.one().quantity_on_hand == Decimal("29.00")
-        assert InventoryLot.query.one().quantity_on_hand == Decimal("19.00")
+        lot = InventoryLot.query.one()
+        assert lot.quantity_on_hand == Decimal("19.00")
+        assert lot.manufactured_at == date.today()
+        assert lot.expiry_date == date.fromisoformat(expiry)
         assert InventoryMovement.query.filter_by(
             movement_type="purchase_receipt"
         ).count() == 2
@@ -195,6 +213,30 @@ def test_perishable_receipt_requires_lot_and_expiry(client, app, seeded_catalog)
     )
     assert response.status_code == 400
     assert "lot_number and expiry_date" in response.json["error"]
+
+
+def test_receipt_dates_require_a_lot_number(client, seeded_catalog):
+    order = _create_purchase_order(client, seeded_catalog, quantity=1, unit="units")
+    client.post(
+        f"/api/purchase-orders/{order['id']}/approve", headers=INTERNAL_HEADERS
+    )
+    response = client.post(
+        f"/api/purchase-orders/{order['id']}/receipts",
+        headers=INTERNAL_HEADERS,
+        json={
+            "external_receipt_id": "GRN-DATES-NO-LOT",
+            "items": [
+                {
+                    "item_id": order["items"][0]["id"],
+                    "quantity": 1,
+                    "unit": "units",
+                    "manufactured_at": date.today().isoformat(),
+                }
+            ],
+        },
+    )
+    assert response.status_code == 400
+    assert "lot_number is required" in response.json["error"]
 
 
 def test_ai_draft_approval_forecast_accuracy_and_grounded_chat(

@@ -21,7 +21,8 @@ def test_admin_dashboard_exposes_new_decision_ui(client, app, seeded_catalog):
     assert b'id="forecast-chart"' in page.data
     assert b"dashboard-viz.js" in page.data
     assert b"Manage team access" in page.data
-    assert b"AI purchasing" in page.data
+    assert b"Purchasing & receiving" in page.data
+    assert b"Add inventory" in page.data
 
 
 def test_manager_and_picker_receive_distinct_navigation(client, app, seeded_catalog):
@@ -61,3 +62,34 @@ def test_purchase_order_register_has_ai_and_filter_controls(client, seeded_catal
     assert b'id="po-search"' in page.data
     assert b'data-po-filter="partially_received"' in page.data
     assert b"Near-expiry lots" in page.data
+    assert b'id="catalogue-step"' in page.data
+    assert b'id="order-step"' in page.data
+    assert b'id="receiving-step"' in page.data
+    assert b'name="return_to" value="purchasing"' in page.data
+    assert b"manufacturing date" in page.data
+
+
+def test_product_can_be_created_inside_purchasing_workflow(client, app, seeded_catalog):
+    response = client.post(
+        "/manage/products",
+        data={
+            "return_to": "purchasing",
+            "sku": "FLOW-001",
+            "name": "Workflow product",
+            "category": "General",
+            "unit_of_measure": "units",
+            "cost_price": "12.50",
+            "sell_price": "18.00",
+            "reorder_point": "3",
+            "safety_stock": "2",
+            "preferred_supplier_id": str(seeded_catalog["supplier_id"]),
+        },
+    )
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/purchase-orders#catalogue-step")
+    with app.app_context():
+        from app.models import Product
+
+        created = Product.query.filter_by(sku="FLOW-001").one()
+        assert created.preferred_supplier_id == seeded_catalog["supplier_id"]

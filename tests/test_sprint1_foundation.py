@@ -9,7 +9,7 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
 from app import create_app, db
-from app.models import Bin, Product, StockLevel
+from app.models import Bin, InventoryLocation, InventoryMovement, Product, StockLevel, User
 from app.schema import (
     SPRINT_1_SCHEMA_VERSION,
     SPRINT_2_SCHEMA_VERSION,
@@ -230,6 +230,7 @@ def test_csv_import_is_atomic_and_can_update_existing_products(client, app):
         "committed": True,
         "created": 2,
         "updated": 0,
+        "inventory_updated": 0,
         "rows_read": 2,
         "errors": [],
     }
@@ -268,6 +269,66 @@ def test_csv_import_is_atomic_and_can_update_existing_products(client, app):
         product = Product.query.filter_by(sku="TEA-250").one()
         assert product.name == "Premium Assam Tea"
         assert product.sell_price == Decimal("130.00")
+
+
+def test_csv_import_sets_inventory_atomically_and_reports_stock_errors(client, app):
+    with app.app_context():
+        actor = User.query.order_by(User.id).first()
+        location = InventoryLocation(
+            workspace_id=actor.workspace_id,
+            name="Bulk warehouse",
+            code="BULK",
+        )
+        db.session.add(location)
+        db.session.flush()
+        db.session.add(Bin(location=location, code="A-01", capacity=100))
+        db.session.commit()
+
+    inventory_csv = (
+        "sku,name,category,unit,quantity,warehouse,bin\n"
+        "BULK-001,Bulk imported product,General,piece,35,BULK,A-01\n"
+    ).encode()
+    imported = client.post(
+        "/api/products/import",
+        headers=INTERNAL_HEADERS,
+        data={"file": (io.BytesIO(inventory_csv), "inventory.csv")},
+        content_type="multipart/form-data",
+    )
+    assert imported.status_code == 201
+    assert imported.json["inventory_updated"] == 1
+
+    with app.app_context():
+        product = Product.query.filter_by(sku="BULK-001").one()
+        stock = StockLevel.query.filter_by(product_id=product.id).one()
+        movement = InventoryMovement.query.filter_by(product_id=product.id).one()
+        assert stock.location.code == "BULK"
+        assert stock.bin.code == "A-01"
+        assert stock.quantity_on_hand == Decimal("35.00")
+        assert movement.quantity_delta == Decimal("35.00")
+        assert movement.reason == "csv_import"
+
+    invalid_csv = (
+        "sku,name,quantity_on_hand,location_code\n"
+        "VALID-STOCK,Would otherwise import,5,BULK\n"
+        "BROKEN-STOCK,Bad warehouse,8,UNKNOWN\n"
+    ).encode()
+    rejected = client.post(
+        "/api/products/import",
+        headers=INTERNAL_HEADERS,
+        data={"file": (io.BytesIO(invalid_csv), "invalid-stock.csv")},
+        content_type="multipart/form-data",
+    )
+    assert rejected.status_code == 422
+    assert rejected.json["committed"] is False
+    assert rejected.json["errors"] == [
+        {
+            "row": 3,
+            "errors": {"location_code": "active warehouse 'UNKNOWN' was not found"},
+        }
+    ]
+    with app.app_context():
+        assert Product.query.filter_by(sku="VALID-STOCK").first() is None
+        assert Product.query.filter_by(sku="BROKEN-STOCK").first() is None
 
 
 def test_sprint1_migration_preserves_legacy_stock_data(tmp_path):

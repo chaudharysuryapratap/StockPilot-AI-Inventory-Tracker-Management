@@ -8,7 +8,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <title>{% block title %}StockPilot{% endblock %}</title>
     <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=asset_version) }}">
   </head>
   <body class="role-{{ current_user.role if current_user else 'guest' }}">
     <div class="mobile-scrim" id="mobile-scrim" aria-hidden="true"></div>
@@ -51,14 +51,14 @@
           {% else %}
             <p class="sidebar-label">Operations</p>
             <a href="{{ url_for('web.orders_page') }}" class="nav-link {% if request.endpoint and 'order' in request.endpoint and 'purchase' not in request.endpoint %}active{% endif %}"><span class="nav-icon">⇥</span><span>Sales orders</span></a>
-            <a href="{{ url_for('web.purchase_orders_page') }}" class="nav-link ai-nav {% if request.endpoint and 'purchase_order' in request.endpoint %}active{% endif %}"><span class="nav-icon">✦</span><span>AI purchasing</span></a>
+            <a href="{{ url_for('web.purchase_orders_page') }}" class="nav-link ai-nav {% if request.endpoint and 'purchase_order' in request.endpoint %}active{% endif %}"><span class="nav-icon">⇣</span><span>Purchasing & receiving</span></a>
             <a href="{{ url_for('web.transfers_page') }}" class="nav-link {% if request.endpoint and 'transfer' in request.endpoint %}active{% endif %}"><span class="nav-icon">⇄</span><span>Stock transfers</span></a>
             <a href="{{ url_for('web.returns_page') }}" class="nav-link {% if request.endpoint and 'return' in request.endpoint %}active{% endif %}"><span class="nav-icon">↶</span><span>Returns / RMA</span></a>
             <a href="{{ url_for('web.picker_page') }}" class="nav-link {% if request.endpoint == 'web.picker_page' %}active{% endif %}"><span class="nav-icon">✓</span><span>Pick queue</span></a>
             <a href="{{ url_for('web.scanner_page') }}" class="nav-link {% if request.endpoint == 'web.scanner_page' %}active{% endif %}"><span class="nav-icon">⌗</span><span>Barcode scanner</span></a>
 
             <p class="sidebar-label">Control</p>
-            <a href="{{ url_for('web.manage_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('web.manage') %}active{% endif %}"><span class="nav-icon">＋</span><span>Inventory setup</span></a>
+            <a href="{{ url_for('web.manage_page') }}" class="nav-link {% if request.endpoint and request.endpoint.startswith('web.manage') %}active{% endif %}"><span class="nav-icon">±</span><span>Stock corrections</span></a>
             <a href="{{ url_for('web.suppliers_page') }}" class="nav-link {% if request.endpoint and 'supplier' in request.endpoint %}active{% endif %}"><span class="nav-icon">◇</span><span>Suppliers</span></a>
             <a href="{{ url_for('web.reports_page') }}" class="nav-link {% if request.endpoint and 'report' in request.endpoint %}active{% endif %}"><span class="nav-icon">▥</span><span>Reports & alerts</span></a>
             {% if current_user and current_user.role == 'admin' %}<a href="{{ url_for('web.users_page') }}" class="nav-link {% if request.endpoint and 'user' in request.endpoint %}active{% endif %}"><span class="nav-icon">♙</span><span>Users & access</span><kbd>Admin</kbd></a>{% endif %}
@@ -118,8 +118,8 @@
         <a href="{{ url_for('web.locations_page') }}" data-command="warehouses locations bins storage"><span>⌘</span><b>Warehouses & bins</b><small>Browse the warehouse network</small></a>
         {% if current_user.role != 'viewer' %}<a href="{{ url_for('web.picker_page') }}" data-command="picker queue pick pack"><span>✓</span><b>Pick queue</b><small>Fulfil active orders</small></a>{% endif %}
         {% if current_user and current_user.role in ['admin','manager'] %}
-          <a href="{{ url_for('web.purchase_orders_page') }}" data-command="ai purchase order expiry dead stock receiving"><span>✦</span><b>AI purchasing</b><small>Draft, approve, receive</small></a>
-          <a href="{{ url_for('web.manage_page') }}" data-command="create product adjust inventory manage"><span>＋</span><b>Inventory setup</b><small>Create and adjust stock</small></a>
+          <a href="{{ url_for('web.purchase_orders_page') }}" data-command="add inventory catalogue csv ai purchase order expiry receiving"><span>⇣</span><b>Add inventory & purchasing</b><small>Create, order, and receive</small></a>
+          <a href="{{ url_for('web.manage_page') }}" data-command="stock correction count write off adjust inventory"><span>±</span><b>Stock corrections</b><small>Counts, write-offs, and adjustments</small></a>
           <a href="{{ url_for('web.reports_page') }}" data-command="reports alerts valuation export"><span>▥</span><b>Reports & alerts</b><small>Export and notify</small></a>
         {% endif %}
         <a href="{{ url_for('web.profile_settings_page') }}" data-command="profile personal account settings"><span>♙</span><b>Profile settings</b><small>Name, email, and account details</small></a>
@@ -129,7 +129,7 @@
     </dialog>
 
     <script src="{{ url_for('static', filename='app-shell.js') }}" defer></script>
-    <script src="{{ url_for('static', filename='ui.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='ui.js', v=asset_version) }}" defer></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

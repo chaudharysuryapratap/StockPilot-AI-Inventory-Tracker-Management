@@ -330,6 +330,14 @@ def test_mfa_challenge_and_tenant_bound_cursor_pagination(saas_client, saas_app)
     assert {
         row["id"] for row in first_page.json["products"]
     }.isdisjoint({row["id"] for row in second_page.json["products"]})
+    assert second_page.json["pagination"]["previous_url"]
+    returned_first_page = saas_client.get(
+        second_page.json["pagination"]["previous_url"]
+    )
+    assert returned_first_page.status_code == 200
+    assert [row["id"] for row in returned_first_page.json["products"]] == [
+        row["id"] for row in first_page.json["products"]
+    ]
 
     tampered_cursor = first_page.json["pagination"]["next_cursor"] + "x"
     assert saas_client.get(
@@ -383,6 +391,7 @@ def test_viewer_is_read_only_and_manager_cannot_add_warehouses(
     assert template.status_code == 200
     assert template.headers["Content-Disposition"].startswith("attachment;")
     assert b"sku,barcode,name,category,unit_of_measure" in template.data
+    assert b"location_code,bin_code,quantity_on_hand" in template.data
     assert b"EXAMPLE-001" in template.data
 
     _logout(saas_client)

@@ -232,7 +232,7 @@ def _cursor_serializer() -> URLSafeSerializer:
     return URLSafeSerializer(current_app.config["SECRET_KEY"], salt="stockpilot-page-v1")
 
 
-def _decode_cursor(kind: str, workspace_id: int) -> int | None:
+def _decode_cursor(kind: str, workspace_id: int) -> tuple[int, str] | None:
     encoded = request.args.get("cursor", "").strip()
     if not encoded:
         return None
@@ -243,45 +243,82 @@ def _decode_cursor(kind: str, workspace_id: int) -> int | None:
             or int(payload.get("workspace_id")) != workspace_id
         ):
             raise ValueError
-        return int(payload["id"])
+        direction = str(payload.get("direction", "next"))
+        if direction not in {"next", "previous"}:
+            raise ValueError
+        return int(payload["id"]), direction
     except (BadSignature, KeyError, TypeError, ValueError):
         abort(400, description="invalid or expired pagination cursor")
 
 
-def _encode_cursor(kind: str, workspace_id: int, record_id: int) -> str:
+def _encode_cursor(
+    kind: str, workspace_id: int, record_id: int, *, direction: str = "next"
+) -> str:
     return _cursor_serializer().dumps(
-        {"kind": kind, "workspace_id": workspace_id, "id": record_id}
+        {
+            "kind": kind,
+            "workspace_id": workspace_id,
+            "id": record_id,
+            "direction": direction,
+        }
     )
 
 
 def _cursor_page(query, model, *, kind: str, workspace_id: int, descending=False):
-    """Return a stable keyset page and total without exposing tenant identifiers."""
+    """Return a reversible stable keyset page without exposing tenant identifiers."""
 
     limit = _page_size()
     total = query.order_by(None).count()
-    marker = _decode_cursor(kind, workspace_id)
+    decoded_cursor = _decode_cursor(kind, workspace_id)
+    marker, direction = decoded_cursor or (None, "next")
     if marker is not None:
-        query = query.filter(model.id < marker if descending else model.id > marker)
-    order = model.id.desc() if descending else model.id.asc()
-    rows = query.order_by(order).limit(limit + 1).all()
-    has_more = len(rows) > limit
+        moving_forward = direction == "next"
+        use_less_than = descending == moving_forward
+        query = query.filter(model.id < marker if use_less_than else model.id > marker)
+
+    base_order = model.id.desc() if descending else model.id.asc()
+    reverse_order = model.id.asc() if descending else model.id.desc()
+    rows = query.order_by(
+        reverse_order if direction == "previous" else base_order
+    ).limit(limit + 1).all()
+    has_extra = len(rows) > limit
     rows = rows[:limit]
+    if direction == "previous":
+        rows.reverse()
+        has_previous = has_extra
+        has_more = marker is not None
+    else:
+        has_previous = marker is not None
+        has_more = has_extra
+
     next_cursor = (
-        _encode_cursor(kind, workspace_id, rows[-1].id)
+        _encode_cursor(kind, workspace_id, rows[-1].id, direction="next")
         if has_more and rows
+        else None
+    )
+    previous_cursor = (
+        _encode_cursor(kind, workspace_id, rows[0].id, direction="previous")
+        if has_previous and rows
         else None
     )
     args = request.args.to_dict(flat=True)
     args.pop("cursor", None)
     next_url = None
+    previous_url = None
     if next_cursor:
         next_url = url_for(request.endpoint, cursor=next_cursor, **args)
+    if previous_cursor:
+        previous_url = url_for(request.endpoint, cursor=previous_cursor, **args)
     return rows, {
         "total": total,
         "limit": limit,
+        "count": len(rows),
         "has_more": has_more,
+        "has_previous": has_previous,
         "next_cursor": next_cursor,
         "next_url": next_url,
+        "previous_cursor": previous_cursor,
+        "previous_url": previous_url,
     }
 
 
@@ -416,6 +453,7 @@ def inject_csrf_token():
         "role_labels": ROLE_LABELS,
         "report_currency": current_app.config["REPORT_CURRENCY"],
         "allow_signup": current_app.config.get("ALLOW_WEB_SIGNUP", False),
+        "asset_version": current_app.config.get("ASSET_VERSION", "20260810.3"),
         "current_workspace": getattr(g, "active_workspace", None),
         "current_membership": getattr(g, "active_membership", None),
         "workspace_memberships": (
@@ -1407,6 +1445,8 @@ def add_supplier_form():
     return redirect(
         url_for("web.suppliers_page")
         if target == "suppliers"
+        else url_for("web.purchase_orders_page", _anchor="catalogue-step")
+        if target == "purchasing"
         else url_for("web.manage_page")
     )
 
@@ -1583,15 +1623,25 @@ def edit_bin_form(bin_id: int):
 @roles_required("admin", "manager")
 def add_product_form():
     payload = request.form.to_dict()
+    return_to = payload.pop("return_to", "")
     payload["is_perishable"] = "is_perishable" in request.form
     try:
         product = ProductService.create(
             payload, workspace_id=_current_actor().workspace_id
         )
-        flash(f"{product.name} was added. Add its starting stock below.", "success")
+        flash(
+            f"{product.name} was added. It is ready to include in a purchase order."
+            if return_to == "purchasing"
+            else f"{product.name} was added. Add its starting stock below.",
+            "success",
+        )
     except ProductValidationError as error:
         flash(str(error), "error")
-    return redirect(url_for("web.manage_page"))
+    return redirect(
+        url_for("web.purchase_orders_page", _anchor="catalogue-step")
+        if return_to == "purchasing"
+        else url_for("web.manage_page")
+    )
 
 
 @web_bp.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
@@ -1642,20 +1692,29 @@ def restore_product_form(product_id: int):
 @web_bp.post("/manage/products/import")
 @roles_required("admin", "manager")
 def import_products_form():
+    return_to = request.form.get("return_to", "")
+    return_url = (
+        url_for("web.purchase_orders_page", _anchor="catalogue-step")
+        if return_to == "purchasing"
+        else url_for("web.manage_page")
+    )
     try:
         content = _uploaded_csv_bytes()
     except ValueError as error:
         flash(str(error), "error")
-        return redirect(url_for("web.manage_page"))
+        return redirect(return_url)
     result = ProductCSVImporter.import_bytes(
         content,
         update_existing="update_existing" in request.form,
         max_rows=current_app.config["MAX_PRODUCT_CSV_ROWS"],
         workspace_id=_current_actor().workspace_id,
+        actor=_current_actor(),
     )
     if result.committed:
         flash(
-            f"CSV import complete: {result.created} created and {result.updated} updated.",
+            f"CSV import complete: {result.created} products created, "
+            f"{result.updated} product details updated, and "
+            f"{result.inventory_updated} inventory balances updated.",
             "success",
         )
     else:
@@ -1665,8 +1724,10 @@ def import_products_form():
             for item in result.errors[:5]
         )
         suffix = "" if len(result.errors) <= 5 else f"; plus {len(result.errors) - 5} more"
-        flash(f"Nothing was imported. {preview}{suffix}", "error")
-    return redirect(url_for("web.manage_page"))
+        flash(
+            f"CSV import failed; nothing was imported. {preview}{suffix}", "error"
+        )
+    return redirect(return_url)
 
 
 @web_bp.post("/manage/stock")
@@ -2224,6 +2285,13 @@ def purchase_orders_page():
         products=Product.query.filter_by(
             workspace_id=actor.workspace_id, is_active=True
         ).order_by(Product.name).limit(current_app.config["MAX_PAGE_SIZE"]).all(),
+        bins=Bin.query.join(InventoryLocation).filter(
+            InventoryLocation.workspace_id == actor.workspace_id,
+            InventoryLocation.is_active.is_(True),
+            Bin.is_active.is_(True),
+        ).order_by(InventoryLocation.code, Bin.code).limit(
+            current_app.config["MAX_PAGE_SIZE"]
+        ).all(),
         recommendations=inventory_recommendations(workspace_id=actor.workspace_id),
         accuracy=ForecastAccuracyService.summary(workspace_id=actor.workspace_id),
     )
@@ -2716,6 +2784,7 @@ def import_products():
         update_existing=update_existing,
         max_rows=current_app.config["MAX_PRODUCT_CSV_ROWS"],
         workspace_id=_current_actor().workspace_id,
+        actor=_current_actor(),
     )
     return jsonify(result.as_dict()), 201 if result.committed else 422
 

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#EEF1F0">
     <title>Sign in · StockPilot</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='app.css', v=asset_version) }}">
   </head>
   <body class="auth-body">
     <div class="auth-orb auth-orb-one"></div><div class="auth-orb auth-orb-two"></div><div class="auth-orb auth-orb-three"></div>
@@ -42,7 +42,7 @@
       </section>
       <p class="auth-footer">StockPilot · Business-isolated inventory operations</p>
     </main>
-    <script src="{{ url_for('static', filename='auth.js') }}" defer></script>
-    <script src="{{ url_for('static', filename='ui.js') }}" defer></script>
+    <script src="{{ url_for('static', filename='auth.js', v=asset_version) }}" defer></script>
+    <script src="{{ url_for('static', filename='ui.js', v=asset_version) }}" defer></script>
   </body>
 </html>

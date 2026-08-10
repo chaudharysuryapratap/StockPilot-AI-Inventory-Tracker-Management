@@ -1,57 +1,57 @@
 {% extends "base.html" %}
 
-{% block title %}Manage inventory · StockPilot AI{% endblock %}
-{% block heading %}Manage your inventory{% endblock %}
+{% block title %}Stock corrections · StockPilot{% endblock %}
+{% block heading %}Stock corrections{% endblock %}
 
 {% block content %}
 <section class="hero-row products-hero">
-  <div><p class="subhead">Add suppliers and products, import a structured catalogue, and record auditable stock corrections.</p></div>
-  <div class="inline-actions"><a class="button secondary" href="{{ url_for('web.suppliers_page') }}">Supplier directory</a><a class="button secondary" href="{{ url_for('web.locations_page') }}">Warehouses & bins</a><a class="button primary" href="{{ url_for('web.transfers_page') }}">Transfer stock</a></div>
+  <div>
+    <p class="eyebrow">INVENTORY CONTROL</p>
+    <h2>Correct the ledger without bypassing purchasing</h2>
+    <p class="subhead">Use this page for physical counts, write-offs, waste, and exceptional corrections. Normal supplier deliveries should be received against a purchase order.</p>
+  </div>
+  <div class="inline-actions">
+    <a class="button primary" href="{{ url_for('web.purchase_orders_page', _anchor='catalogue-step') }}">Add inventory</a>
+    <a class="button secondary" href="{{ url_for('web.suppliers_page') }}">Suppliers</a>
+    <a class="button secondary" href="{{ url_for('web.locations_page') }}">Warehouses & bins</a>
+  </div>
 </section>
 
-<section class="manage-grid">
-  <article class="panel form-panel">
-    <p class="eyebrow">STEP 1</p><h2>Add a supplier</h2>
-    <form action="{{ url_for('web.add_supplier_form') }}" method="post" class="data-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>Supplier name<input name="name" required maxlength="120" placeholder="Metro Staples"></label>
-      <div class="form-row"><label>Email<input type="email" name="contact_email" placeholder="orders@example.com"></label><label>Lead time (days)<input type="number" name="lead_time_days" min="0" max="3650" value="3" required></label></div>
-      <div class="form-row"><label>Phone<input name="contact_phone" maxlength="50" placeholder="Optional"></label><label>Payment terms<input name="payment_terms" maxlength="100" placeholder="Net 30"></label></div>
-      <button class="button primary">Add supplier</button>
-    </form>
-  </article>
+<section class="permission-note" role="note">
+  <span>⇣</span>
+  <p><strong>Receiving a supplier delivery?</strong><small>Create or open its purchase order so supplier, warehouse, quantities, units, lots, and expiry dates remain connected.</small></p>
+  <a class="button secondary compact" href="{{ url_for('web.purchase_orders_page', _anchor='order-step') }}">Open purchasing</a>
+</section>
+
+<section class="manage-grid correction-layout">
   <article class="panel form-panel wide">
-    <p class="eyebrow">STEP 2</p><h2>Add a product</h2>
-    <form action="{{ url_for('web.add_product_form') }}" method="post" class="data-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="form-row triple"><label>SKU<input name="sku" required maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9._/-]*" placeholder="COFFEE-250"></label><label>Product name<input name="name" required maxlength="255" placeholder="Cold Coffee 250 ml"></label><label>Barcode<input name="barcode" maxlength="100" placeholder="Optional"></label></div>
-      <div class="form-row triple"><label>Category<input name="category" value="General" required maxlength="100"></label><label>Unit of measure<input name="unit_of_measure" value="unit" required maxlength="20"></label><label class="checkbox-label"><input type="checkbox" name="is_perishable" value="true"> Perishable product</label></div>
-      <div class="form-row triple"><label>Cost price<input type="number" name="cost_price" min="0" max="99999999.99" step="0.01" value="0.00" required></label><label>Sell price<input type="number" name="sell_price" min="0" max="99999999.99" step="0.01" value="0.00" required></label><label>Reorder point<input type="number" name="reorder_point" min="0" step="1" value="0" required></label></div>
-      <div class="form-row"><label>Safety stock<input type="number" name="safety_stock" min="0" step="1" value="0" required></label><label>Preferred supplier<select name="preferred_supplier_id"><option value="">No preferred supplier</option>{% for supplier in suppliers %}<option value="{{ supplier.id }}">{{ supplier.name }} · {{ supplier.lead_time_days }} days</option>{% endfor %}</select></label></div>
-      <button class="button primary">Add product</button>
-    </form>
-  </article>
-  <article class="panel form-panel wide">
-    <p class="eyebrow">BULK CATALOGUE</p><h2>Import products from CSV</h2>
-    <p class="form-help">Use the fixed StockPilot columns so Excel users do not have to guess the format. Delete the example row before entering your catalogue. Imports are atomic: if any row is invalid, nothing is saved.</p>
-    <div class="csv-template-callout"><span>CSV</span><div><strong>Start with the formatted template</strong><small>Includes every supported column and one example row.</small></div><a class="button secondary compact" href="{{ url_for('web.download_products_import_template') }}">Download template</a></div>
-    <form action="{{ url_for('web.import_products_form') }}" method="post" enctype="multipart/form-data" class="data-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <label>CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
-      <label class="checkbox-label"><input type="checkbox" name="update_existing" value="true"> Update products when the SKU already exists</label>
-      <button class="button secondary">Import CSV</button>
-    </form>
-  </article>
-  <article class="panel form-panel wide">
-    <p class="eyebrow">STEP 3</p><h2>Adjust stock</h2>
-    <p class="form-help">Use a positive number for received stock and a negative number for write-offs or count corrections.</p>
+    <div class="panel-header"><div><p class="eyebrow">AUDITED ADJUSTMENT</p><h2>Record a stock correction</h2><p class="panel-note">A movement is written to the audit ledger for every correction.</p></div></div>
     <form action="{{ url_for('web.adjust_stock_form') }}" method="post" class="data-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="form-row"><label>Product<select name="sku" required><option value="">Select a product</option>{% for product in products %}<option value="{{ product.sku }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}</select></label><label>Location<select name="location_code" required><option value="">Select a location</option>{% for location in locations %}<option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label></div>
-      <div class="form-row"><label>Bin (optional)<select name="bin_code"><option value="">Unassigned / location level</option>{% for bin in bins %}<option value="{{ bin.code }}">{{ bin.location.code }} / {{ bin.code }}</option>{% endfor %}</select></label><label>Quantity change<input type="number" name="quantity_delta" step="0.01" required placeholder="e.g. 25 or -3"></label></div>
-      <div class="form-row"><label>Reason<select name="reason"><option value="stock_received">Stock received</option><option value="manual_count">Manual count</option><option value="waste">Waste / write-off</option><option value="return">Customer return</option></select></label><label>Note<input name="note" maxlength="255" placeholder="Optional reference"></label></div>
-      <button class="button primary">Save adjustment</button>
+      <div class="form-row">
+        <label>Product<select name="sku" required><option value="">Select a product</option>{% for product in products %}<option value="{{ product.sku }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}</select></label>
+        <label>Warehouse<select name="location_code" required><option value="">Select a warehouse</option>{% for location in locations %}<option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label>
+      </div>
+      <div class="form-row">
+        <label>Bin (optional)<select name="bin_code"><option value="">Warehouse level / no bin</option>{% for bin in bins %}<option value="{{ bin.code }}">{{ bin.location.code }} / {{ bin.code }}</option>{% endfor %}</select></label>
+        <label>Quantity change<input type="number" name="quantity_delta" step="0.01" required placeholder="For example 25 or -3"></label>
+      </div>
+      <div class="form-row">
+        <label>Reason<select name="reason"><option value="manual_count">Physical count correction</option><option value="waste">Waste / write-off</option><option value="return">Exceptional return correction</option><option value="stock_received">Legacy receipt correction</option></select></label>
+        <label>Reference or note<input name="note" maxlength="255" placeholder="Count sheet, incident, or approval reference"></label>
+      </div>
+      <button class="button primary" type="submit">Save audited correction</button>
     </form>
   </article>
+  <aside class="panel form-panel correction-guidance">
+    <p class="eyebrow">WHEN TO USE THIS</p>
+    <h3>Corrections are exceptions</h3>
+    <ul class="plain-check-list">
+      <li><span>✓</span> Physical count differs from StockPilot</li>
+      <li><span>✓</span> Damaged or expired stock is written off</li>
+      <li><span>✓</span> A historic balance needs an audited correction</li>
+    </ul>
+    <p class="form-help">Do not use a correction for a normal supplier delivery. Purchasing records ordered versus received quantities and preserves lot traceability.</p>
+  </aside>
 </section>
 {% endblock %}

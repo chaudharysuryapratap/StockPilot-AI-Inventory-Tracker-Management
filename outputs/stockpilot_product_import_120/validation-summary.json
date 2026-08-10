@@ -1,0 +1,24 @@
+{
+  "rowCount": 120,
+  "columnCount": 11,
+  "uniqueSkuCount": 120,
+  "nonBlankBarcodeCount": 113,
+  "uniqueNonBlankBarcodeCount": 113,
+  "perishableTrueCount": 42,
+  "zeroReorderPointCount": 12,
+  "zeroSafetyStockCount": 10,
+  "blankSupplierCount": 120,
+  "categoryCounts": {
+    "Bakery": 6,
+    "Beverages": 15,
+    "Dairy": 15,
+    "Electronics": 9,
+    "Fresh Produce": 15,
+    "Frozen Foods": 6,
+    "Grocery": 21,
+    "Household": 12,
+    "Office Supplies": 9,
+    "Personal Care": 9,
+    "Storage": 3
+  }
+}

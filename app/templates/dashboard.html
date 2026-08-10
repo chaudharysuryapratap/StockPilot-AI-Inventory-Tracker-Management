@@ -14,15 +14,15 @@
       <a class="button primary" href="{{ url_for('web.picker_page') }}">Open my pick queue <span>→</span></a>
       <a class="button secondary" href="{{ url_for('web.scanner_page') }}">Scan an item</a>
     {% elif current_user.role == 'manager' %}
-      <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review AI orders</a>
+      <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review purchasing</a>
       <a class="button primary" href="{{ url_for('web.orders_page') }}">Manage today’s orders <span>→</span></a>
     {% elif current_user.role == 'viewer' %}
       <a class="button secondary" href="{{ url_for('web.locations_page') }}">Browse warehouses</a>
       <a class="button primary" href="{{ url_for('web.reports_page') }}">Open reports <span>→</span></a>
     {% else %}
-      <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review AI orders</a>
+      <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review purchasing</a>
       <a class="button secondary" href="{{ url_for('web.users_page') }}">Manage team access</a>
-      <a class="button primary" href="{{ url_for('web.manage_page') }}">Create stock action <span>→</span></a>
+      <a class="button primary" href="{{ url_for('web.purchase_orders_page', _anchor='catalogue-step') }}">Add inventory <span>→</span></a>
     {% endif %}
   </div>
 </section>

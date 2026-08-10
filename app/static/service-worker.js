@@ -1,4 +1,4 @@
-const CACHE_NAME = "stockpilot-picker-v4";
+const CACHE_NAME = "stockpilot-picker-v5";
 const OFFLINE_URL = "/static/offline.html";
 const APP_SHELL = [
   OFFLINE_URL,
@@ -37,6 +37,16 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (url.pathname.startsWith("/static/")) {
-    event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request)));
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (!response.ok) return response;
+          const copy = response.clone();
+          return caches.open(CACHE_NAME).then((cache) =>
+            cache.put(event.request, copy).then(() => response)
+          );
+        })
+        .catch(() => caches.match(event.request))
+    );
   }
 });
