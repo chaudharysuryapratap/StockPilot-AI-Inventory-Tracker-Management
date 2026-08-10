@@ -37,12 +37,11 @@ code { color: var(--teal); font-family: "Cascadia Code", Consolas, monospace; fo
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 264px minmax(0, 1fr); }
 .sidebar { position: sticky; top: 0; z-index: 30; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; padding: 22px 14px 18px; color: rgba(255,255,255,.75); background: var(--ink); scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
 .sidebar-top { display: flex; align-items: center; justify-content: space-between; }
-.brand { display: flex; align-items: center; gap: 11px; padding: 0 8px; color: #fff; }
-.brand-symbol { display: block; flex: 0 0 auto; width: 40px; height: 40px; filter: drop-shadow(0 5px 10px rgba(0,0,0,.12)); }
+.brand { display: flex; align-items: center; gap: 13px; padding: 0 8px; color: #fff; }
+.brand-symbol { display: block; flex: 0 0 auto; width: 48px; height: 48px; filter: drop-shadow(0 5px 10px rgba(0,0,0,.12)); }
 .brand-copy { display: grid; }
-.brand-name { display: inline-flex; font-size: 17px; font-weight: 780; letter-spacing: -.045em; line-height: 1.05; }
+.brand-name { display: inline-flex; font-size: 21px; font-weight: 780; letter-spacing: -.05em; line-height: 1; }
 .brand-name span:last-child { color: var(--amber); }
-.brand-copy small { color: rgba(255,255,255,.44); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .workspace-switcher { position: relative; margin: 24px 4px 17px; }
 .workspace-switcher > summary { list-style: none; }
 .workspace-switcher > summary::-webkit-details-marker { display: none; }
@@ -560,9 +559,8 @@ input::placeholder, textarea::placeholder { color: #9aa09d; }
 .auth-stage { position: relative; z-index: 1; width: min(100%,1440px); min-height: 100vh; margin: 0 auto; padding: 28px clamp(24px,5vw,78px) 22px; }
 .auth-brand { display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
 .auth-brand > span:last-child { display: grid; }
-.auth-brand .brand-name { font-size: 17px; }
+.auth-brand .brand-name { font-size: 21px; }
 .auth-brand .brand-name span:last-child { color: var(--teal); }
-.auth-brand small { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
 .auth-frame { display: grid; grid-template-columns: minmax(340px,.9fr) minmax(450px,1.1fr); align-items: center; gap: clamp(38px,7vw,105px); min-height: calc(100vh - 116px); padding: 36px 0; }
 .signup-frame { grid-template-columns: minmax(320px,.65fr) minmax(620px,1.35fr); gap: clamp(35px,5vw,72px); }
 .auth-copy { max-width: 590px; }
