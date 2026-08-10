@@ -6,10 +6,10 @@
 {% block content %}
 <section class="hero-row products-hero">
   <div><p class="subhead">Download point-in-time inventory risk and current-cost valuation reports. Critical email attempts are recorded for audit.</p></div>
-  <form action="{{ url_for('web.send_critical_alert_form') }}" method="post">
+  {% if current_user.role in ['admin', 'manager'] %}<form action="{{ url_for('web.send_critical_alert_form') }}" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button class="button primary">Analyze and send critical alert</button>
-  </form>
+  </form>{% else %}<span class="role-tag viewer">Viewer · export only</span>{% endif %}
 </section>
 
 <section class="metric-grid">

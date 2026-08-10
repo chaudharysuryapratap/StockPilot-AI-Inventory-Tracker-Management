@@ -44,7 +44,13 @@
           "Content-Type": "application/json",
           "X-CSRF-Token": panel.dataset.csrfToken,
         },
-        body: JSON.stringify({ question, conversation_id: conversationId }),
+        body: JSON.stringify({
+          question,
+          conversation_id: conversationId,
+          warehouse_id: panel.dataset.warehouseId
+            ? Number(panel.dataset.warehouseId)
+            : null,
+        }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Assistant unavailable");

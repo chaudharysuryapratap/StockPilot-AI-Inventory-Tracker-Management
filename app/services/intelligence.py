@@ -27,41 +27,49 @@ from app.services.products import number_for_json
 
 def inventory_recommendations(
     *, workspace_id: int, expiry_days: int | None = None,
-    dead_stock_days: int | None = None,
+    dead_stock_days: int | None = None, location_id: int | None = None,
 ) -> dict:
     expiry_days = expiry_days or current_app.config["NEAR_EXPIRY_DAYS"]
     dead_stock_days = dead_stock_days or current_app.config["DEAD_STOCK_DAYS"]
     today = date.today()
-    near_expiry = (
-        InventoryLot.query.join(Product, InventoryLot.product_id == Product.id)
-        .filter(
+    near_expiry_query = (
+        InventoryLot.query.join(Product, InventoryLot.product_id == Product.id).filter(
             InventoryLot.workspace_id == workspace_id,
             InventoryLot.quantity_on_hand > 0,
             InventoryLot.expiry_date.is_not(None),
             InventoryLot.expiry_date <= today + timedelta(days=expiry_days),
         )
-        .order_by(InventoryLot.expiry_date, Product.name)
-        .all()
     )
-    last_sales = (
+    if location_id is not None:
+        near_expiry_query = near_expiry_query.filter(
+            InventoryLot.location_id == location_id
+        )
+    near_expiry = near_expiry_query.order_by(
+        InventoryLot.expiry_date, Product.name
+    ).all()
+    last_sales_query = (
         db.session.query(
             SaleItem.product_id, func.max(Sale.occurred_at).label("last_sale_at")
         )
         .join(Sale, SaleItem.sale_id == Sale.id)
         .filter(Sale.workspace_id == workspace_id)
-        .group_by(SaleItem.product_id)
-        .subquery()
     )
-    stock_totals = (
+    if location_id is not None:
+        last_sales_query = last_sales_query.filter(Sale.location_id == location_id)
+    last_sales = last_sales_query.group_by(SaleItem.product_id).subquery()
+    stock_totals_query = (
         db.session.query(
             StockLevel.product_id,
             func.sum(StockLevel.quantity_on_hand).label("quantity_on_hand"),
         )
         .join(Product, StockLevel.product_id == Product.id)
         .filter(Product.workspace_id == workspace_id, Product.is_active.is_(True))
-        .group_by(StockLevel.product_id)
-        .subquery()
     )
+    if location_id is not None:
+        stock_totals_query = stock_totals_query.filter(
+            StockLevel.location_id == location_id
+        )
+    stock_totals = stock_totals_query.group_by(StockLevel.product_id).subquery()
     cutoff = utcnow() - timedelta(days=dead_stock_days)
     dead_rows = (
         db.session.query(Product, stock_totals.c.quantity_on_hand, last_sales.c.last_sale_at)
@@ -163,8 +171,13 @@ class ForecastAccuracyService:
         return outcomes
 
     @staticmethod
-    def summary(*, workspace_id: int) -> dict:
-        rows = ForecastOutcome.query.filter_by(workspace_id=workspace_id).all()
+    def summary(*, workspace_id: int, location_id: int | None = None) -> dict:
+        query = ForecastOutcome.query.filter_by(workspace_id=workspace_id)
+        if location_id is not None:
+            query = query.join(DemandInsight).filter(
+                DemandInsight.location_id == location_id
+            )
+        rows = query.all()
         if not rows:
             return {"evaluated_forecasts": 0, "mae": None, "mape": None, "bias": None}
         errors = [float(row.absolute_error) for row in rows]
@@ -182,17 +195,21 @@ class ForecastAccuracyService:
         }
 
 
-def dashboard_context(*, workspace_id: int) -> dict:
-    recommendations = inventory_recommendations(workspace_id=workspace_id)
-    newest = (
+def dashboard_context(*, workspace_id: int, location_id: int | None = None) -> dict:
+    recommendations = inventory_recommendations(
+        workspace_id=workspace_id, location_id=location_id
+    )
+    newest_query = (
         DemandInsight.query.join(
             InventoryLocation, DemandInsight.location_id == InventoryLocation.id
         )
         .filter(InventoryLocation.workspace_id == workspace_id)
-        .order_by(DemandInsight.generated_at.desc(), DemandInsight.id.desc())
-        .limit(100)
-        .all()
     )
+    if location_id is not None:
+        newest_query = newest_query.filter(DemandInsight.location_id == location_id)
+    newest = newest_query.order_by(
+        DemandInsight.generated_at.desc(), DemandInsight.id.desc()
+    ).limit(100).all()
     current: dict[tuple[int, int], DemandInsight] = {}
     previous: dict[tuple[int, int], DemandInsight] = {}
     for insight in newest:
@@ -236,13 +253,21 @@ def dashboard_context(*, workspace_id: int) -> dict:
         "demand_changes": sorted(demand_changes, key=lambda row: abs(row["change"]), reverse=True)[:20],
         "near_expiry": recommendations["near_expiry"][:20],
         "dead_stock": recommendations["dead_stock"][:20],
-        "forecast_accuracy": ForecastAccuracyService.summary(workspace_id=workspace_id),
+        "forecast_accuracy": ForecastAccuracyService.summary(
+            workspace_id=workspace_id, location_id=location_id
+        ),
     }
 
 
 class DashboardChatService:
     @staticmethod
-    def ask(question: object, *, actor: User, conversation_id: int | None = None) -> tuple[ChatConversation, ChatMessage]:
+    def ask(
+        question: object,
+        *,
+        actor: User,
+        conversation_id: int | None = None,
+        location_id: int | None = None,
+    ) -> tuple[ChatConversation, ChatMessage]:
         normalized = str(question or "").strip()
         if not normalized:
             raise ValueError("question is required")
@@ -257,7 +282,13 @@ class DashboardChatService:
             conversation = ChatConversation(workspace_id=actor.workspace_id, user=actor)
             db.session.add(conversation)
             db.session.flush()
-        context = dashboard_context(workspace_id=actor.workspace_id)
+        if location_id is not None:
+            location = db.session.get(InventoryLocation, location_id)
+            if location is None or location.workspace_id != actor.workspace_id:
+                raise ValueError("warehouse was not found")
+        context = dashboard_context(
+            workspace_id=actor.workspace_id, location_id=location_id
+        )
         db.session.add(ChatMessage(conversation=conversation, role="user", content=normalized))
         answer = BedrockNarrator.answer(normalized, context) or DashboardChatService._fallback(normalized, context)
         response = ChatMessage(

@@ -84,7 +84,13 @@ def _logout(client):
     assert client.post("/logout", data={"csrf_token": token}).status_code == 302
 
 
-def _login(client, *, handle="freshmart", email="admin@freshmart.test"):
+def _login(
+    client,
+    *,
+    handle="freshmart",
+    email="admin@freshmart.test",
+    password="correct-horse-admin",
+):
     token = _csrf(client, "/login")
     return client.post(
         "/login",
@@ -92,7 +98,7 @@ def _login(client, *, handle="freshmart", email="admin@freshmart.test"):
             "csrf_token": token,
             "business_username": handle,
             "identifier": email,
-            "password": "correct-horse-admin",
+            "password": password,
         },
     )
 
@@ -132,7 +138,7 @@ def test_modern_signup_creates_unique_business_warehouse_and_membership(
     }
 
 
-def test_workspace_creation_switching_settings_and_catalogue_isolation(
+def test_single_business_warehouse_creation_settings_and_catalogue_isolation(
     saas_client, saas_app
 ):
     _signup(saas_client)
@@ -152,7 +158,7 @@ def test_workspace_creation_switching_settings_and_catalogue_isolation(
 
     with saas_client.session_transaction() as browser_session:
         token = browser_session["csrf_token"]
-    created = saas_client.post(
+    redirected = saas_client.post(
         "/workspaces/new",
         data={
             "csrf_token": token,
@@ -162,35 +168,29 @@ def test_workspace_creation_switching_settings_and_catalogue_isolation(
             "warehouse_address": "8 Harbour Street, Chennai",
         },
     )
-    assert created.status_code == 302
+    assert redirected.status_code == 302
+    assert redirected.location == "/warehouses"
 
     with saas_app.app_context():
-        second = Workspace.query.filter_by(business_username="northwind").one()
-        second_id = second.id
-        assert WorkspaceMembership.query.count() == 2
-        db.session.add(
-            Product(
-                workspace=second,
-                sku="NORTH-ONLY",
-                name="Northwind product",
-                category="General",
-                unit_of_measure="unit",
-            )
-        )
-        db.session.commit()
-
-    second_catalogue = saas_client.get("/api/products")
-    assert [row["sku"] for row in second_catalogue.json["products"]] == ["NORTH-ONLY"]
+        assert Workspace.query.count() == 1
+        assert WorkspaceMembership.query.count() == 1
 
     with saas_client.session_transaction() as browser_session:
         token = browser_session["csrf_token"]
-    switched = saas_client.post(
-        f"/workspaces/{first_id}/switch",
-        data={"csrf_token": token, "next": "/products"},
+    warehouse = saas_client.post(
+        "/warehouses",
+        data={
+            "csrf_token": token,
+            "name": "North Dock",
+            "code": "NORTH",
+            "address": "8 Harbour Street, Chennai",
+        },
     )
-    assert switched.location == "/products"
+    assert warehouse.location == "/warehouses"
     first_catalogue = saas_client.get("/api/products")
     assert [row["sku"] for row in first_catalogue.json["products"]] == ["FRESH-ONLY"]
+    with saas_app.app_context():
+        assert InventoryLocation.query.filter_by(workspace_id=first_id).count() == 2
 
     with saas_client.session_transaction() as browser_session:
         token = browser_session["csrf_token"]
@@ -216,7 +216,7 @@ def test_workspace_creation_switching_settings_and_catalogue_isolation(
         ).one()
         assert integration.secret_reference == "OIDC_SECRET_FRESHMART"
         assert "secret" not in integration.config_json
-        assert db.session.get(Workspace, second_id).business_username == "northwind"
+        assert Workspace.query.count() == 1
 
 
 def test_invitation_verification_password_reset_and_durable_throttle(
@@ -337,24 +337,128 @@ def test_mfa_challenge_and_tenant_bound_cursor_pagination(saas_client, saas_app)
     ).status_code == 400
 
     with saas_app.app_context():
-        admin = User.query.one()
-        other, _ = WorkspaceService.create_for_user(
+        _, _ = WorkspaceService.create_for_user(
             {
                 "business_name": "Cursor Other",
                 "business_username": "cursor-other",
                 "warehouse_name": "Other Warehouse",
                 "warehouse_address": "Other Address",
+                "name": "Other Admin",
+                "email": "other@cursor.test",
+                "password": "correct-horse-admin",
+                "password_confirm": "correct-horse-admin",
             },
-            user=admin,
         )
-        other_id = other.id
-    with saas_client.session_transaction() as browser_session:
-        token = browser_session["csrf_token"]
-    saas_client.post(
-        f"/workspaces/{other_id}/switch", data={"csrf_token": token}
-    )
-    assert saas_client.get(next_url).status_code == 400
+    other_client = saas_app.test_client()
+    assert _login(
+        other_client, handle="cursor-other", email="other@cursor.test"
+    ).status_code == 302
+    assert other_client.get(next_url).status_code == 400
     with saas_app.app_context():
         assert WorkspaceMembership.query.filter_by(
             workspace_id=workspace_id, role="admin"
         ).count() == 1
+
+
+def test_viewer_is_read_only_and_manager_cannot_add_warehouses(
+    saas_client, saas_app
+):
+    _signup(saas_client)
+    with saas_client.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    created = saas_client.post(
+        "/users",
+        data={
+            "csrf_token": token,
+            "name": "Vera Viewer",
+            "email": "viewer@freshmart.test",
+            "role": "viewer",
+            "password": "viewer-password-1",
+            "is_active": "true",
+        },
+    )
+    assert created.status_code == 302
+
+    template = saas_client.get("/templates/products-import.csv")
+    assert template.status_code == 200
+    assert template.headers["Content-Disposition"].startswith("attachment;")
+    assert b"sku,barcode,name,category,unit_of_measure" in template.data
+    assert b"EXAMPLE-001" in template.data
+
+    _logout(saas_client)
+    viewer_login = _login(
+        saas_client,
+        email="viewer@freshmart.test",
+        password="viewer-password-1",
+    )
+    assert viewer_login.location == "/"
+    dashboard = saas_client.get("/")
+    assert b"Inventory at a glance" in dashboard.data
+    assert b"Read-only views" in dashboard.data
+    assert b"AI purchasing" not in dashboard.data
+    warehouses = saas_client.get("/warehouses")
+    assert b"Read-only warehouse view" in warehouses.data
+    assert b"Add a new warehouse" not in warehouses.data
+    with saas_client.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    assert saas_client.post(
+        "/warehouses",
+        data={"csrf_token": token, "name": "Blocked", "code": "BLOCKED"},
+    ).status_code == 403
+    assert saas_client.get("/manage").status_code == 403
+    assert saas_client.get("/reports").status_code == 200
+
+    with saas_app.app_context():
+        viewer = User.query.filter_by(email="viewer@freshmart.test").one()
+        membership = WorkspaceMembership.query.filter_by(user_id=viewer.id).one()
+        membership.role = "manager"
+        viewer._role = "manager"
+        db.session.commit()
+    assert saas_client.post(
+        "/warehouses",
+        data={"csrf_token": token, "name": "Still blocked", "code": "MANAGER"},
+    ).status_code == 403
+
+
+def test_profile_menu_settings_and_warehouse_command_centre(
+    saas_client, saas_app
+):
+    _signup(saas_client)
+    with saas_client.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    created = saas_client.post(
+        "/warehouses",
+        data={
+            "csrf_token": token,
+            "name": "South Warehouse",
+            "code": "SOUTH",
+            "address": "South Industrial Estate",
+        },
+    )
+    assert created.location == "/warehouses"
+    with saas_app.app_context():
+        south = InventoryLocation.query.filter_by(code="SOUTH").one()
+        south_id = south.id
+
+    command_centre = saas_client.get("/?scope=all")
+    assert b'id="profile-menu"' in command_centre.data
+    assert b"Inventory Command Centre" in command_centre.data
+    assert b"Every warehouse, one command centre" in command_centre.data
+    assert b"South Warehouse" in command_centre.data
+
+    focused = saas_client.get(f"/?scope=warehouse&warehouse_id={south_id}")
+    assert b"Dashboard details are filtered to this warehouse" in focused.data
+    assert b'data-warehouse-id="' + str(south_id).encode() + b'"' in focused.data
+
+    updated = saas_client.post(
+        "/profile",
+        data={
+            "csrf_token": token,
+            "name": "Surya Profile",
+            "email": "profile@freshmart.test",
+        },
+    )
+    assert updated.location == "/profile"
+    profile = saas_client.get("/profile")
+    assert b"Surya Profile" in profile.data
+    assert b"profile@freshmart.test" in profile.data

@@ -2,11 +2,12 @@
 
 A portfolio-ready inventory system for retailers and restaurants. It consumes sale events in near real time, updates stock safely, forecasts demand from historical sales, maintains supplier, fulfilment, and returns operations, exports risk/valuation reports, and emails owner-ready reorder actions.
 
-StockPilot supports multiple isolated business workspaces in one deployment. A
-person can belong to several workspaces, switch between them, and hold a different
-Admin, Manager, or Picker role in each. Workspace rows remain the ownership and
-audit boundary for catalogues, warehouses, orders, settings, integrations, and AI
-context; signed cursors and every service lookup are tenant-bound.
+StockPilot supports multiple isolated businesses in one deployment while keeping
+each user account attached to one business. A business can operate many warehouses
+and assign Admin, Manager, Picker, or read-only Viewer access. Workspace rows remain
+the internal ownership and audit boundary for catalogues, warehouses, orders,
+settings, integrations, and AI context; signed cursors and every service lookup are
+tenant-bound.
 
 The application is deliberately split into two kinds of intelligence:
 
@@ -42,13 +43,13 @@ flowchart TD
 | Collision-safe positions | A generated position key prevents duplicate unassigned stock rows under concurrent writes |
 | Atomic stock transfers | Idempotent location/bin transfers protect reserved stock and update both positions in one transaction |
 | Outbound order fulfilment | Manual sales orders reserve exact bin positions, generate pick lists, enforce pick/pack gates, and deduct reserved stock once on shipment |
-| Location management | Validated add/edit operations for warehouse locations and bins, including activation and capacity safeguards |
+| Warehouse management | One Admin-only warehouse and bin section with validated activation and capacity safeguards |
 | Product catalogue | Validated add/edit/archive/restore operations with SKU, barcode, category, UoM, prices, perishability, and supplier fields |
 | Supplier directory | Workspace-scoped supplier CRUD with contacts, lead times, payment terms, archive/restore, and protected product relationships |
-| CSV bulk import | Atomic create/update import with row-level validation errors and a 1,000-row default limit |
+| CSV bulk import | Downloadable fixed-format template plus atomic create/update import with row-level validation errors and a 1,000-row default limit |
 | Auditability | POS sales, order shipments, adjustments, and paired transfers record location, bin, reference, timestamp, and user attribution |
-| Named users and roles | Password-hashed Admin, Manager, and Picker accounts with server-enforced permissions and CSRF-protected browser actions |
-| SaaS workspaces | Unique business usernames, workspace creation/switching, per-workspace memberships, tenant settings, and secret-reference-only integration records |
+| Named users and roles | Password-hashed Admin, Manager, Picker, and read-only Viewer accounts with server-enforced permissions and CSRF-protected browser actions |
+| SaaS business isolation | Unique business usernames, one-business-per-account memberships, tenant settings, and secret-reference-only integration records |
 | Production authentication | Hashed single-use email verification, password-reset and invitation tokens; database-backed login throttling; TOTP MFA/recovery codes; and per-workspace OIDC SSO |
 | Scalable catalogues | Signed cursor pagination, totals, and server-side search/filtering for products, locations, suppliers, staff, transfers, sales orders, returns, and purchase orders |
 | Camera barcode scanner | Locally bundled `html5-qrcode` scanner with rear-camera, manual/USB-reader, SKU fallback, and live bin-level stock lookup |
@@ -97,15 +98,16 @@ python3 -m venv .venv
 .venv/bin/flask --app run run --debug
 ```
 
-On a fresh database, StockPilot redirects to `/signup` until the first Admin creates a business identity and primary warehouse. An Admin can then invite people, create staff accounts, configure OIDC, or create another isolated workspace. Every signed-in user can enable TOTP MFA from **Security**. Camera access works on `localhost`; a deployed instance must use HTTPS for browser camera permission.
+On a fresh database, StockPilot redirects to `/signup` until the first Admin creates a business identity and primary warehouse. An Admin can then add warehouses and bins from one section, invite people, create staff accounts, or configure OIDC. Every signed-in user can enable TOTP MFA from **Security**. Camera access works on `localhost`; a deployed instance must use HTTPS for browser camera permission.
 
 Role boundaries:
 
 | Role | Allowed browser operations |
 | --- | --- |
-| Admin | All inventory, outbound, returns, and user-management operations |
-| Manager | Product, supplier, purchase-order approval/receiving, unit conversions, location/bin, stock-adjustment, transfer, reports, alerts, order shipment, and RMA request/review/receiving workflows |
+| Admin | All inventory, warehouse/bin configuration, outbound, returns, and user-management operations |
+| Manager | Product, supplier, purchase-order approval/receiving, unit conversions, stock-adjustment, transfer, reports, alerts, order shipment, and RMA request/review/receiving workflows; warehouse creation/configuration is Admin-only |
 | Picker | Dashboard/product/location views, barcode scanning, transfers, mobile pick/pack execution, and authorized return receiving; no catalogue, user, arbitrary adjustment, order creation, shipment, or RMA approval controls |
+| Viewer | Read-only dashboard, warehouse, catalogue, order, transfer, return, and reporting views; no operational inventory mutations |
 
 The scanner bundles `html5-qrcode` 2.3.8 locally so the private application has no runtime CDN dependency. Its Apache-2.0 license is included at `app/static/vendor/html5-qrcode.LICENSE.txt`.
 
@@ -206,8 +208,8 @@ Browser transfers automatically use the signed-in named user for audit attributi
 
 `X-Actor-Email` attribution is disabled by default. A private integration may
 enable `ALLOW_ACTOR_HEADER=true`; use `X-Workspace: <business-username>` when a
-person belongs to more than one tenant. The actor must have an active membership
-in that exact workspace. Keep attribution disabled when machine actions should
+the integration identifies a business explicitly. The actor must have an active
+membership in that exact workspace. Keep attribution disabled when machine actions should
 use the durable service actor.
 
 ### Sales-order fulfilment contract
@@ -257,7 +259,7 @@ curl -X POST http://127.0.0.1:5000/api/sales-orders/42/returns \
 
 ### Product CSV format
 
-Only `sku` and `name` are required. The accepted optional columns are `barcode`, `category`, `unit_of_measure`, `cost_price`, `sell_price`, `reorder_point`, `safety_stock`, `is_perishable`, and `preferred_supplier_id`. See [`examples/products-import.csv`](examples/products-import.csv).
+Only `sku` and `name` are required. The accepted optional columns are `barcode`, `category`, `unit_of_measure`, `cost_price`, `sell_price`, `reorder_point`, `safety_stock`, `is_perishable`, and `preferred_supplier_id`. Admins and Managers can download the fixed-format template from **Inventory setup → Import products from CSV**; the repository example is [`examples/products-import.csv`](examples/products-import.csv).
 
 The import is atomic: if one row fails validation, no rows are committed. Send multipart form data with a field named `file`. Add `update_existing=true` to update matching SKUs; otherwise an existing SKU is reported as an error.
 
@@ -267,9 +269,9 @@ curl -X POST http://127.0.0.1:5000/api/products/import \
   -F 'file=@examples/products-import.csv'
 ```
 
-### Sprint 1–9 database migrations
+### Sprint 1–10 database migrations
 
-`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprints 1–6 build the authoritative stock, location/bin, named-user, fulfilment, supplier/reporting, and RMA foundations. Sprint 7 hardened the original single-workspace release. Sprint 8 scopes catalogue identifiers and adds conversions, purchase orders/receipts, expiry-aware lots, forecast outcomes, and assistant history. Sprint 9 safely evolves existing users into per-workspace memberships, assigns unique business usernames, creates tenant settings and integration records, and adds durable verification/reset/invitation, login-throttle, MFA, and recovery-code tables. Existing home-workspace roles and records are backfilled without deleting stock or audit history.
+`flask --app run migrate-schema` is idempotent and supports both local SQLite and RDS MySQL. Sprints 1–6 build the authoritative stock, location/bin, named-user, fulfilment, supplier/reporting, and RMA foundations. Sprint 7 hardened the original single-workspace release. Sprint 8 scopes catalogue identifiers and adds conversions, purchase orders/receipts, expiry-aware lots, forecast outcomes, and assistant history. Sprint 9 safely evolves existing users into tenant memberships, assigns unique business usernames, creates tenant settings and integration records, and adds durable verification/reset/invitation, login-throttle, MFA, and recovery-code tables. Sprint 10 expands the role constraint for Viewer access and introduces the single-business, multi-warehouse product experience without changing inventory ownership. Existing roles and records are preserved.
 
 Recorded revisions:
 
@@ -282,6 +284,7 @@ Recorded revisions:
 - `20260808_single_workspace_hardening`
 - `20260808_procurement_lots_intelligence`
 - `20260809_saas_identity_workspaces`
+- `20260810_single_business_warehouses_viewer`
 
 Run `flask --app run schema-version` to inspect the applied revisions.
 
@@ -407,5 +410,5 @@ examples/            Sample product CSV import file
 infra/               EC2 IAM policy and Scheduler → Lambda → SSM template
 scripts/             EC2 bootstrap and scheduled-job wrapper
 deploy/              Gunicorn systemd unit and Nginx reverse-proxy config
-tests/               67 regression tests across Sprints 1–9, including migrations, SaaS workspaces, auth tokens/MFA, cursor isolation, CRUD, procurement, receipts, conversions, lots/expiry, forecast accuracy, grounded chat, transfers, fulfilment, reports, mobile picker, and RMAs
+tests/               Regression tests across Sprints 1–10, including migrations, business isolation, warehouse scope, Viewer authorization, profiles, CSV templates, auth tokens/MFA, pagination, CRUD, procurement, lots/expiry, forecast accuracy, chat, fulfilment, reports, picker flows, and RMAs
 ```

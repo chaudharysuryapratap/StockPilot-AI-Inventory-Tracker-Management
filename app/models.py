@@ -132,7 +132,8 @@ class WorkspaceMembership(db.Model):
     __table_args__ = (
         db.UniqueConstraint("workspace_id", "user_id", name="uq_membership_workspace_user"),
         db.CheckConstraint(
-            "role IN ('admin', 'manager', 'picker')", name="ck_membership_role"
+            "role IN ('admin', 'manager', 'picker', 'viewer')",
+            name="ck_membership_role",
         ),
     )
 

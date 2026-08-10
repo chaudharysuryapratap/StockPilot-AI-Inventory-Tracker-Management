@@ -57,6 +57,17 @@
     if (event.target === command) command.close();
   });
 
+  const profileMenu = document.getElementById("profile-menu");
+  document.addEventListener("click", (event) => {
+    if (profileMenu?.open && !profileMenu.contains(event.target)) {
+      profileMenu.removeAttribute("open");
+    }
+  });
+
+  document.querySelectorAll("[data-auto-submit]").forEach((control) => {
+    control.addEventListener("change", () => control.form?.requestSubmit());
+  });
+
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();

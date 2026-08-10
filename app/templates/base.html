@@ -22,23 +22,18 @@
           <button class="icon-button sidebar-close" id="sidebar-close" type="button" aria-label="Close navigation">×</button>
         </div>
 
-        <details class="workspace-switcher">
-          <summary class="workspace-chip">
+        <div class="workspace-switcher business-identity">
+          <div class="workspace-chip">
             <span class="workspace-avatar">{{ (current_workspace.name[:1] if current_workspace else 'S')|upper }}</span>
-            <span><small>Workspace · @{{ current_workspace.business_username if current_workspace else 'stockpilot' }}</small><strong>{{ current_workspace.name if current_workspace else 'StockPilot' }}</strong></span><i>⌄</i>
-          </summary>
-          <div class="workspace-menu">
-            <p>Switch workspace</p>
-            {% for membership in workspace_memberships %}<form action="{{ url_for('web.switch_workspace', workspace_id=membership.workspace_id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.path }}"><button type="submit" class="{% if current_workspace and membership.workspace_id == current_workspace.id %}active{% endif %}"><span>{{ membership.workspace.name[:1]|upper }}</span><b>{{ membership.workspace.name }}</b><small>{{ membership.role|title }}</small></button></form>{% endfor %}
-            <a href="{{ url_for('web.create_workspace_page') }}"><span>＋</span><b>New workspace</b><small>Create an isolated business</small></a>
+            <span><small>Business · @{{ current_workspace.business_username if current_workspace else 'stockpilot' }}</small><strong>{{ current_workspace.name if current_workspace else 'StockPilot' }}</strong></span><i>✓</i>
           </div>
-        </details>
+        </div>
 
         <nav class="sidebar-nav" aria-label="Primary navigation">
-          <p class="sidebar-label">Workspace</p>
+          <p class="sidebar-label">Business</p>
           <a href="{{ url_for('web.dashboard') }}" class="nav-link {% if request.endpoint == 'web.dashboard' %}active{% endif %}"><span class="nav-icon">⌂</span><span>Overview</span></a>
           <a href="{{ url_for('web.products_page') }}" class="nav-link {% if request.endpoint and 'product' in request.endpoint and 'purchase' not in request.endpoint %}active{% endif %}"><span class="nav-icon">▦</span><span>Stock catalogue</span></a>
-          <a href="{{ url_for('web.locations_page') }}" class="nav-link {% if request.endpoint in ['web.locations_page', 'web.edit_location_form', 'web.edit_bin_form'] %}active{% endif %}"><span class="nav-icon">⌘</span><span>Locations & bins</span></a>
+          <a href="{{ url_for('web.locations_page') }}" class="nav-link {% if request.endpoint in ['web.locations_page', 'web.edit_location_form', 'web.edit_bin_form'] %}active{% endif %}"><span class="nav-icon">⌘</span><span>Warehouses & bins</span>{% if current_user and current_user.role == 'admin' %}<kbd>Admin</kbd>{% endif %}</a>
 
           {% if current_user and current_user.role == 'picker' %}
             <p class="sidebar-label">My shift</p>
@@ -47,6 +42,12 @@
             <a href="{{ url_for('web.orders_page') }}" class="nav-link {% if request.endpoint and 'order' in request.endpoint and 'purchase' not in request.endpoint %}active{% endif %}"><span class="nav-icon">⇥</span><span>Orders</span></a>
             <a href="{{ url_for('web.transfers_page') }}" class="nav-link {% if request.endpoint and 'transfer' in request.endpoint %}active{% endif %}"><span class="nav-icon">⇄</span><span>Transfers</span></a>
             <a href="{{ url_for('web.returns_page') }}" class="nav-link {% if request.endpoint and 'return' in request.endpoint %}active{% endif %}"><span class="nav-icon">↶</span><span>Returns</span></a>
+          {% elif current_user and current_user.role == 'viewer' %}
+            <p class="sidebar-label">Read-only views</p>
+            <a href="{{ url_for('web.orders_page') }}" class="nav-link {% if request.endpoint and 'order' in request.endpoint and 'purchase' not in request.endpoint %}active{% endif %}"><span class="nav-icon">⇥</span><span>Sales orders</span></a>
+            <a href="{{ url_for('web.transfers_page') }}" class="nav-link {% if request.endpoint and 'transfer' in request.endpoint %}active{% endif %}"><span class="nav-icon">⇄</span><span>Stock transfers</span></a>
+            <a href="{{ url_for('web.returns_page') }}" class="nav-link {% if request.endpoint and 'return' in request.endpoint %}active{% endif %}"><span class="nav-icon">↶</span><span>Returns / RMA</span></a>
+            <a href="{{ url_for('web.reports_page') }}" class="nav-link {% if request.endpoint and 'report' in request.endpoint %}active{% endif %}"><span class="nav-icon">▥</span><span>Reports & analytics</span><kbd>View</kbd></a>
           {% else %}
             <p class="sidebar-label">Operations</p>
             <a href="{{ url_for('web.orders_page') }}" class="nav-link {% if request.endpoint and 'order' in request.endpoint and 'purchase' not in request.endpoint %}active{% endif %}"><span class="nav-icon">⇥</span><span>Sales orders</span></a>
@@ -61,7 +62,7 @@
             <a href="{{ url_for('web.suppliers_page') }}" class="nav-link {% if request.endpoint and 'supplier' in request.endpoint %}active{% endif %}"><span class="nav-icon">◇</span><span>Suppliers</span></a>
             <a href="{{ url_for('web.reports_page') }}" class="nav-link {% if request.endpoint and 'report' in request.endpoint %}active{% endif %}"><span class="nav-icon">▥</span><span>Reports & alerts</span></a>
             {% if current_user and current_user.role == 'admin' %}<a href="{{ url_for('web.users_page') }}" class="nav-link {% if request.endpoint and 'user' in request.endpoint %}active{% endif %}"><span class="nav-icon">♙</span><span>Users & access</span><kbd>Admin</kbd></a>{% endif %}
-            {% if current_user and current_user.role == 'admin' %}<a href="{{ url_for('web.workspace_settings_page') }}" class="nav-link {% if request.endpoint == 'web.workspace_settings_page' %}active{% endif %}"><span class="nav-icon">⚙</span><span>Workspace settings</span></a>{% endif %}
+            {% if current_user and current_user.role == 'admin' %}<a href="{{ url_for('web.workspace_settings_page') }}" class="nav-link {% if request.endpoint == 'web.workspace_settings_page' %}active{% endif %}"><span class="nav-icon">⚙</span><span>Business settings</span></a>{% endif %}
           {% endif %}
         </nav>
 
@@ -75,13 +76,12 @@
         <header class="topbar">
           <div class="topbar-title">
             <button class="icon-button menu-button" id="menu-button" type="button" aria-label="Open navigation">☰</button>
-            <div><p class="eyebrow">{{ current_user.role|upper if current_user else 'STOCKPILOT' }} WORKSPACE</p><h1>{% block heading %}Inventory overview{% endblock %}</h1></div>
+            <div><p class="eyebrow">{{ current_user.role|upper if current_user else 'STOCKPILOT' }} · {{ current_workspace.name if current_workspace else 'STOCKPILOT' }}</p><h1>{% block heading %}Inventory overview{% endblock %}</h1></div>
           </div>
           <div class="topbar-actions">
             <button class="command-trigger" id="command-trigger" type="button"><span>⌕</span><span class="command-label">Search workspace</span><kbd>Ctrl K</kbd></button>
             <span id="system-status" class="status-chip" data-health-url="{{ url_for('api.health') }}"><i></i><span>Checking</span></span>
-            {% if current_user %}<div class="user-chip"><span class="user-avatar">{{ current_user.name[:1]|upper }}</span><span><b>{{ current_user.name }}</b><small>{{ role_labels.get(current_user.role, current_user.role)|title }}</small></span></div>{% endif %}
-            {% if auth_enabled and current_user %}<form action="{{ url_for('web.logout') }}" method="post" class="logout-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="icon-button" type="submit" aria-label="Sign out" title="Sign out">↗</button></form>{% endif %}
+            {% if current_user %}<details class="profile-menu" id="profile-menu"><summary class="user-chip"><span class="user-avatar">{{ current_user.name[:1]|upper }}</span><span><b>{{ current_user.name }}</b><small>{{ role_labels.get(current_user.role, current_user.role)|title }}</small></span><i>⌄</i></summary><div class="profile-popover"><div class="profile-summary"><span class="user-avatar large">{{ current_user.name[:1]|upper }}</span><div><strong>{{ current_user.name }}</strong><small>{{ current_user.email }}</small></div></div><dl><div><dt>Role</dt><dd>{{ role_labels.get(current_user.role, current_user.role) }}</dd></div><div><dt>Business</dt><dd>{{ current_workspace.name }}</dd></div></dl><a href="{{ url_for('web.profile_settings_page') }}"><span>♙</span> Profile settings</a><a href="{{ url_for('web.security_page') }}"><span>⌁</span> Account security</a>{% if auth_enabled %}<form action="{{ url_for('web.logout') }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit"><span>↗</span> Log out</button></form>{% endif %}</div></details>{% endif %}
           </div>
         </header>
 
@@ -96,6 +96,11 @@
         <a href="{{ url_for('web.scanner_page') }}" class="{% if request.endpoint == 'web.scanner_page' %}active{% endif %}"><span>⌗</span>Scan</a>
         <a href="{{ url_for('web.products_page') }}"><span>▦</span>Stock</a>
         <a href="{{ url_for('web.orders_page') }}"><span>⇥</span>Orders</a>
+      {% elif current_user and current_user.role == 'viewer' %}
+        <a href="{{ url_for('web.dashboard') }}" class="{% if request.endpoint == 'web.dashboard' %}active{% endif %}"><span>⌂</span>Home</a>
+        <a href="{{ url_for('web.products_page') }}"><span>▦</span>Stock</a>
+        <a href="{{ url_for('web.locations_page') }}"><span>⌘</span>Warehouses</a>
+        <button id="mobile-more" type="button"><span>☰</span>More</button>
       {% else %}
         <a href="{{ url_for('web.dashboard') }}" class="{% if request.endpoint == 'web.dashboard' %}active{% endif %}"><span>⌂</span>Home</a>
         <a href="{{ url_for('web.products_page') }}"><span>▦</span>Stock</a>
@@ -110,12 +115,14 @@
         <p class="command-group">Navigate</p>
         <a href="{{ url_for('web.dashboard') }}" data-command="overview dashboard forecasts risks"><span>⌂</span><b>Overview</b><small>Forecasts and stock risk</small></a>
         <a href="{{ url_for('web.products_page') }}" data-command="products stock catalogue inventory"><span>▦</span><b>Stock catalogue</b><small>Search products and balances</small></a>
-        <a href="{{ url_for('web.picker_page') }}" data-command="picker queue pick pack"><span>✓</span><b>Pick queue</b><small>Fulfil active orders</small></a>
+        <a href="{{ url_for('web.locations_page') }}" data-command="warehouses locations bins storage"><span>⌘</span><b>Warehouses & bins</b><small>Browse the warehouse network</small></a>
+        {% if current_user.role != 'viewer' %}<a href="{{ url_for('web.picker_page') }}" data-command="picker queue pick pack"><span>✓</span><b>Pick queue</b><small>Fulfil active orders</small></a>{% endif %}
         {% if current_user and current_user.role in ['admin','manager'] %}
           <a href="{{ url_for('web.purchase_orders_page') }}" data-command="ai purchase order expiry dead stock receiving"><span>✦</span><b>AI purchasing</b><small>Draft, approve, receive</small></a>
           <a href="{{ url_for('web.manage_page') }}" data-command="create product adjust inventory manage"><span>＋</span><b>Inventory setup</b><small>Create and adjust stock</small></a>
           <a href="{{ url_for('web.reports_page') }}" data-command="reports alerts valuation export"><span>▥</span><b>Reports & alerts</b><small>Export and notify</small></a>
         {% endif %}
+        <a href="{{ url_for('web.profile_settings_page') }}" data-command="profile personal account settings"><span>♙</span><b>Profile settings</b><small>Name, email, and account details</small></a>
         <a href="{{ url_for('web.security_page') }}" data-command="security password mfa account"><span>⌁</span><b>Account security</b><small>Password and MFA</small></a>
       </div>
       <p class="command-empty" id="command-empty" hidden>No matching destination. Try “purchase”, “picker”, or “reports”.</p>

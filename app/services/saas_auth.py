@@ -107,6 +107,10 @@ class WorkspaceService:
 
     @staticmethod
     def create_for_user(payload: dict, *, user: User | None = None) -> tuple[Workspace, User]:
+        if user is not None:
+            raise WorkspaceValidationError(
+                {"account": "an account can belong to only one business"}
+            )
         identity = WorkspaceService.validate_identity(payload)
         creating_user = user is None
         user_values = None
@@ -177,12 +181,16 @@ class WorkspaceService:
         if not EMAIL_PATTERN.fullmatch(normalized_email):
             errors["email"] = "must be a valid email address"
         if normalized_role not in ROLES:
-            errors["role"] = "must be admin, manager, or picker"
+            errors["role"] = "must be admin, manager, picker, or viewer"
         existing_user = User.query.filter_by(email=normalized_email).first()
         if existing_user and WorkspaceMembership.query.filter_by(
             user_id=existing_user.id, workspace_id=workspace.id
         ).first():
-            errors["email"] = "already belongs to this workspace"
+            errors["email"] = "already belongs to this business"
+        elif existing_user and WorkspaceMembership.query.filter_by(
+            user_id=existing_user.id, is_active=True
+        ).first():
+            errors["email"] = "already belongs to another business"
         if errors:
             raise WorkspaceValidationError(errors)
         return AuthTokenService.issue(
@@ -201,6 +209,16 @@ class WorkspaceService:
             raise WorkspaceValidationError(
                 {"email": "sign in with the invited email address"}
             )
+        if user is not None:
+            other_membership = WorkspaceMembership.query.filter(
+                WorkspaceMembership.user_id == user.id,
+                WorkspaceMembership.workspace_id != token.workspace_id,
+                WorkspaceMembership.is_active.is_(True),
+            ).first()
+            if other_membership is not None:
+                raise WorkspaceValidationError(
+                    {"account": "this account already belongs to another business"}
+                )
         if user is None:
             account_payload = dict(payload)
             account_payload["email"] = email

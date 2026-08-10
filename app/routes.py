@@ -445,45 +445,85 @@ def _stockout_is_soon(serialized: dict) -> bool:
     )
 
 
-def _dashboard_data() -> dict:
+def _dashboard_data(location_id: int | None = None) -> dict:
     actor = _current_actor()
     insight_rows = [
         row for row in latest_insights()
         if row.location.workspace_id == actor.workspace_id
+        and (location_id is None or row.location_id == location_id)
     ]
     insights = [serialize_insight(row) for row in insight_rows]
-    total_units = (
+    stock_total_query = (
         db.session.query(func.coalesce(func.sum(StockLevel.quantity_on_hand), 0))
         .join(Product, StockLevel.product_id == Product.id)
         .filter(
             Product.workspace_id == actor.workspace_id,
             Product.is_active.is_(True),
         )
-        .scalar()
     )
+    if location_id is not None:
+        stock_total_query = stock_total_query.filter(
+            StockLevel.location_id == location_id
+        )
+    total_units = stock_total_query.scalar()
     at_risk = [
         insight
         for insight in insights
         if insight["recommended_reorder_quantity"] > 0 or _stockout_is_soon(insight)
     ]
+    product_count_query = Product.query.filter_by(
+        workspace_id=actor.workspace_id, is_active=True
+    )
+    if location_id is not None:
+        product_count_query = product_count_query.join(StockLevel).filter(
+            StockLevel.location_id == location_id
+        )
+    locations = InventoryLocation.query.filter_by(
+        workspace_id=actor.workspace_id, is_active=True
+    ).order_by(InventoryLocation.name, InventoryLocation.id).all()
+    warehouse_summaries = []
+    for location in locations:
+        serialized = serialize_location(location)
+        warehouse_summaries.append(
+            {
+                "id": location.id,
+                "name": location.name,
+                "code": location.code,
+                "address": location.address,
+                "bins": len([item for item in location.bins if item.is_active]),
+                "products": db.session.query(func.count(func.distinct(StockLevel.product_id)))
+                .filter(StockLevel.location_id == location.id)
+                .scalar(),
+                "stock": serialized["stock"],
+                "risks": len(
+                    [
+                        insight
+                        for insight in insights
+                        if insight["location"] == location.code
+                        and insight["recommended_reorder_quantity"] > 0
+                    ]
+                ),
+            }
+        )
     return {
         "metrics": {
-            "active_products": Product.query.filter_by(
-                workspace_id=actor.workspace_id, is_active=True
-            ).count(),
-            "locations": InventoryLocation.query.filter_by(
-                workspace_id=actor.workspace_id
-            ).count(),
+            "active_products": product_count_query.distinct().count(),
+            "locations": 1 if location_id is not None else len(locations),
             "total_units": number_for_json(total_units),
             "items_at_risk": len(at_risk),
         },
         "insights": insights,
         "recommendations": inventory_recommendations(
-            workspace_id=actor.workspace_id
+            workspace_id=actor.workspace_id, location_id=location_id
         ),
         "forecast_accuracy": ForecastAccuracyService.summary(
-            workspace_id=actor.workspace_id
+            workspace_id=actor.workspace_id, location_id=location_id
         ),
+        "warehouses": [
+            {"id": row.id, "name": row.name, "code": row.code}
+            for row in locations
+        ],
+        "warehouse_summaries": warehouse_summaries,
     }
 
 
@@ -625,8 +665,33 @@ def _order_action_redirect(order_id: int):
 
 @web_bp.get("/")
 def dashboard():
-    data = _dashboard_data()
-    return render_template("dashboard.html", **data)
+    actor = _current_actor()
+    warehouses = InventoryLocation.query.filter_by(
+        workspace_id=actor.workspace_id, is_active=True
+    ).order_by(InventoryLocation.name, InventoryLocation.id).all()
+    scope = request.args.get("scope", session.get("dashboard_scope", "all"))
+    scope = "warehouse" if scope == "warehouse" else "all"
+    requested_id = request.args.get(
+        "warehouse_id", session.get("dashboard_warehouse_id", "")
+    )
+    try:
+        warehouse_id = int(requested_id) if requested_id not in (None, "") else None
+    except (TypeError, ValueError):
+        warehouse_id = None
+    selected = next((row for row in warehouses if row.id == warehouse_id), None)
+    if scope == "warehouse" and selected is None:
+        selected = warehouses[0] if warehouses else None
+    selected_id = selected.id if scope == "warehouse" and selected else None
+    session["dashboard_scope"] = scope
+    if selected:
+        session["dashboard_warehouse_id"] = selected.id
+    data = _dashboard_data(selected_id)
+    return render_template(
+        "dashboard.html",
+        **data,
+        dashboard_scope=scope,
+        selected_warehouse=selected,
+    )
 
 
 def _complete_login(actor: User, workspace_id: int | None = None):
@@ -905,36 +970,52 @@ def security_page():
     )
 
 
-@web_bp.route("/workspaces/new", methods=["GET", "POST"])
-def create_workspace_page():
+@web_bp.route("/profile", methods=["GET", "POST"])
+def profile_settings_page():
     actor = _current_actor()
     if request.method == "POST":
+        previous_email = actor.email
         try:
-            workspace, _ = WorkspaceService.create_for_user(
-                request.form.to_dict(), user=actor
+            UserService.update(
+                actor,
+                {
+                    "name": request.form.get("name"),
+                    "email": request.form.get("email"),
+                },
+                acting_user=actor,
             )
-            _complete_login(actor, workspace.id)
-            flash(f"{workspace.name} is ready with its first warehouse.", "success")
-            return redirect(url_for("web.dashboard"))
-        except WorkspaceValidationError as error:
-            db.session.rollback()
+            if actor.email != previous_email:
+                actor.email_verified_at = None
+                db.session.commit()
+                raw_token, _ = AuthTokenService.verification(actor)
+                verification_link = url_for(
+                    "web.verify_email", token=raw_token, _external=True
+                )
+                _send_auth_link(
+                    recipient=actor.email,
+                    subject="Verify your updated StockPilot email",
+                    link=verification_link,
+                    explanation="Confirm the new email address for your StockPilot profile.",
+                )
+                flash("Profile updated. Verify your new email address.", "success")
+            else:
+                flash("Profile settings were updated.", "success")
+            return redirect(url_for("web.profile_settings_page"))
+        except UserValidationError as error:
             flash(str(error), "error")
-    return render_template("workspace_new.html")
+    return render_template("profile_settings.html")
+
+
+@web_bp.route("/workspaces/new", methods=["GET", "POST"])
+@roles_required("admin")
+def create_workspace_page():
+    flash("Business accounts use one workspace. Add warehouses here instead.", "success")
+    return redirect(url_for("web.locations_page"))
 
 
 @web_bp.post("/workspaces/<int:workspace_id>/switch")
 def switch_workspace(workspace_id: int):
-    actor = _current_actor()
-    membership = WorkspaceService.membership(actor, workspace_id)
-    if membership is None:
-        abort(404)
-    session["active_workspace_id"] = membership.workspace_id
-    activate_workspace_context(actor, membership.workspace_id)
-    membership.last_accessed_at = utcnow()
-    db.session.commit()
-    flash(f"Switched to {membership.workspace.name}.", "success")
-    target = _safe_next_target(request.form.get("next", ""))
-    return redirect(target or url_for("web.dashboard"))
+    abort(404)
 
 
 @web_bp.route("/workspace/settings", methods=["GET", "POST"])
@@ -970,11 +1051,14 @@ def workspace_settings_page():
                 integration = integration or WorkspaceIntegration(
                     workspace=workspace, provider="oidc", name="default"
                 )
+                default_role = request.form.get("oidc_default_role", "picker")
+                if default_role not in ROLES:
+                    default_role = "picker"
                 integration.config_json = {
                     "issuer": issuer,
                     "client_id": client_id,
                     "auto_provision": "oidc_auto_provision" in request.form,
-                    "default_role": request.form.get("oidc_default_role", "picker"),
+                    "default_role": default_role,
                 }
                 integration.secret_reference = str(
                     request.form.get("oidc_secret_reference") or ""
@@ -984,7 +1068,7 @@ def workspace_settings_page():
             elif integration:
                 integration.is_active = False
             db.session.commit()
-            flash("Workspace settings were updated.", "success")
+            flash("Business settings were updated.", "success")
             return redirect(url_for("web.workspace_settings_page"))
     return render_template(
         "workspace_settings.html",
@@ -1402,17 +1486,19 @@ def restore_supplier_form(supplier_id: int):
 
 
 @web_bp.post("/manage/locations")
-@roles_required("admin", "manager")
+@web_bp.post("/warehouses")
+@roles_required("admin")
 def add_location_form():
     try:
         location = LocationService.create(request.form.to_dict(), actor=_current_actor())
         flash(f"{location.name} was added.", "success")
     except LocationValidationError as error:
         flash(str(error), "error")
-    return redirect(url_for("web.manage_page"))
+    return redirect(url_for("web.locations_page"))
 
 
 @web_bp.get("/locations")
+@web_bp.get("/warehouses")
 def locations_page():
     actor = _current_actor()
     query = InventoryLocation.query.filter_by(
@@ -1439,6 +1525,7 @@ def locations_page():
     return render_template(
         "locations.html",
         locations=locations,
+        warehouse_stats={row.id: serialize_location(row) for row in locations},
         pagination=pagination,
         q=q,
         state_filter=state,
@@ -1446,7 +1533,7 @@ def locations_page():
 
 
 @web_bp.route("/locations/<int:location_id>/edit", methods=["GET", "POST"])
-@roles_required("admin", "manager")
+@roles_required("admin")
 def edit_location_form(location_id: int):
     location = _location_for_actor(location_id)
     if request.method == "POST":
@@ -1462,7 +1549,7 @@ def edit_location_form(location_id: int):
 
 
 @web_bp.post("/locations/<int:location_id>/bins")
-@roles_required("admin", "manager")
+@roles_required("admin")
 def add_bin_form(location_id: int):
     location = _location_for_actor(location_id)
     try:
@@ -1474,7 +1561,7 @@ def add_bin_form(location_id: int):
 
 
 @web_bp.route("/bins/<int:bin_id>/edit", methods=["GET", "POST"])
-@roles_required("admin", "manager")
+@roles_required("admin")
 def edit_bin_form(bin_id: int):
     bin_record = _bin_for_actor(bin_id)
     if request.method == "POST":
@@ -2026,7 +2113,7 @@ def receive_return_item_form(return_id: int, item_id: int):
 
 
 @web_bp.get("/reports")
-@roles_required("admin", "manager")
+@roles_required("admin", "manager", "viewer")
 def reports_page():
     actor = _current_actor()
     return render_template(
@@ -2044,7 +2131,7 @@ def reports_page():
 
 
 @web_bp.get("/reports/<report_type>.<file_format>")
-@roles_required("admin", "manager")
+@roles_required("admin", "manager", "viewer")
 def download_report(report_type: str, file_format: str):
     actor = _current_actor()
     try:
@@ -2057,6 +2144,18 @@ def download_report(report_type: str, file_format: str):
         mimetype=mimetype,
         as_attachment=True,
         download_name=ReportExporter.filename(report, file_format),
+        max_age=0,
+    )
+
+
+@web_bp.get("/templates/products-import.csv")
+@roles_required("admin", "manager")
+def download_products_import_template():
+    return send_file(
+        BytesIO(ProductCSVImporter.template_bytes()),
+        mimetype="text/csv; charset=utf-8",
+        as_attachment=True,
+        download_name="StockPilot-product-import-template.csv",
         max_age=0,
     )
 
@@ -2278,7 +2377,13 @@ def service_worker():
 @api_bp.get("/dashboard")
 @api_read_access
 def dashboard_api():
-    return jsonify(_dashboard_data())
+    actor = _current_actor()
+    warehouse_id = request.args.get("warehouse_id", type=int)
+    if warehouse_id is not None and InventoryLocation.query.filter_by(
+        id=warehouse_id, workspace_id=actor.workspace_id
+    ).first() is None:
+        abort(404)
+    return jsonify(_dashboard_data(warehouse_id))
 
 
 @api_bp.get("/locations")
@@ -3103,6 +3208,7 @@ def dashboard_chat_api():
             payload.get("question"),
             actor=_current_actor(),
             conversation_id=payload.get("conversation_id"),
+            location_id=payload.get("warehouse_id"),
         )
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
@@ -3118,7 +3224,13 @@ def dashboard_chat_api():
 @api_bp.get("/assistant/context")
 @api_read_access
 def dashboard_assistant_context_api():
-    return jsonify(dashboard_context(workspace_id=_current_actor().workspace_id))
+    actor = _current_actor()
+    return jsonify(
+        dashboard_context(
+            workspace_id=actor.workspace_id,
+            location_id=request.args.get("warehouse_id", type=int),
+        )
+    )
 
 
 @api_bp.get("/insights")

@@ -17,6 +17,7 @@ SPRINT_6_SCHEMA_VERSION = "20260806_sprint6_picker_explainability_returns"
 SPRINT_7_SCHEMA_VERSION = "20260808_single_workspace_hardening"
 SPRINT_8_SCHEMA_VERSION = "20260808_procurement_lots_intelligence"
 SPRINT_9_SCHEMA_VERSION = "20260809_saas_identity_workspaces"
+SPRINT_10_SCHEMA_VERSION = "20260810_single_business_warehouses_viewer"
 SCHEMA_VERSIONS = (
     SPRINT_1_SCHEMA_VERSION,
     SPRINT_2_SCHEMA_VERSION,
@@ -27,6 +28,7 @@ SCHEMA_VERSIONS = (
     SPRINT_7_SCHEMA_VERSION,
     SPRINT_8_SCHEMA_VERSION,
     SPRINT_9_SCHEMA_VERSION,
+    SPRINT_10_SCHEMA_VERSION,
 )
 
 
@@ -872,6 +874,87 @@ def _upgrade_sprint9(connection) -> None:
     )
 
 
+def _upgrade_sprint10(connection) -> None:
+    """Expand membership roles without changing any tenant or inventory data."""
+
+    if connection.dialect.name == "sqlite":
+        checks = sa.inspect(connection).get_check_constraints("workspace_memberships")
+        role_check = next(
+            (item for item in checks if item.get("name") == "ck_membership_role"),
+            None,
+        )
+        if role_check and "viewer" in str(role_check.get("sqltext") or "").lower():
+            return
+        connection.execute(sa.text("DROP TABLE IF EXISTS workspace_memberships_sprint10"))
+        connection.execute(
+            sa.text(
+                "CREATE TABLE workspace_memberships_sprint10 ("
+                "id INTEGER NOT NULL PRIMARY KEY, "
+                "workspace_id INTEGER NOT NULL REFERENCES workspaces(id), "
+                "user_id INTEGER NOT NULL REFERENCES users(id), "
+                "role VARCHAR(50) NOT NULL DEFAULT 'picker', "
+                "is_active BOOLEAN NOT NULL DEFAULT TRUE, "
+                "joined_at DATETIME NOT NULL, "
+                "last_accessed_at DATETIME NULL, "
+                "CONSTRAINT uq_membership_workspace_user UNIQUE (workspace_id, user_id), "
+                "CONSTRAINT ck_membership_role "
+                "CHECK (role IN ('admin', 'manager', 'picker', 'viewer')))"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO workspace_memberships_sprint10 "
+                "(id, workspace_id, user_id, role, is_active, joined_at, last_accessed_at) "
+                "SELECT id, workspace_id, user_id, role, is_active, joined_at, "
+                "last_accessed_at FROM workspace_memberships"
+            )
+        )
+        connection.execute(sa.text("DROP TABLE workspace_memberships"))
+        connection.execute(
+            sa.text(
+                "ALTER TABLE workspace_memberships_sprint10 "
+                "RENAME TO workspace_memberships"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE INDEX ix_workspace_memberships_workspace_id "
+                "ON workspace_memberships (workspace_id)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE INDEX ix_workspace_memberships_user_id "
+                "ON workspace_memberships (user_id)"
+            )
+        )
+        return
+
+    if connection.dialect.name in {"mysql", "mariadb"}:
+        checks = sa.inspect(connection).get_check_constraints("workspace_memberships")
+        for item in checks:
+            if item.get("name") == "ck_membership_role":
+                drop_keyword = (
+                    "DROP CONSTRAINT"
+                    if connection.dialect.name == "mariadb"
+                    else "DROP CHECK"
+                )
+                connection.execute(
+                    sa.text(
+                        "ALTER TABLE workspace_memberships "
+                        f"{drop_keyword} ck_membership_role"
+                    )
+                )
+                break
+        connection.execute(
+            sa.text(
+                "ALTER TABLE workspace_memberships ADD CONSTRAINT "
+                "ck_membership_role CHECK "
+                "(role IN ('admin', 'manager', 'picker', 'viewer'))"
+            )
+        )
+
+
 def migrate_schema() -> MigrationResult:
     """Apply all pending StockPilot migrations to SQLite or RDS MySQL."""
     applied_versions: list[str] = []
@@ -977,8 +1060,16 @@ def migrate_schema() -> MigrationResult:
             )
             applied_versions.append(SPRINT_9_SCHEMA_VERSION)
 
+        if SPRINT_10_SCHEMA_VERSION not in existing:
+            _upgrade_sprint10(connection)
+            connection.execute(
+                sa.text("INSERT INTO schema_migrations (version) VALUES (:version)"),
+                {"version": SPRINT_10_SCHEMA_VERSION},
+            )
+            applied_versions.append(SPRINT_10_SCHEMA_VERSION)
+
     return MigrationResult(
-        version=applied_versions[-1] if applied_versions else SPRINT_9_SCHEMA_VERSION,
+        version=applied_versions[-1] if applied_versions else SPRINT_10_SCHEMA_VERSION,
         applied=bool(applied_versions),
         applied_versions=tuple(applied_versions),
     )

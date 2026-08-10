@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
 {% block title %}Users & access · StockPilot AI{% endblock %}
-{% block heading %}Users & workspace access{% endblock %}
+{% block heading %}Users & business access{% endblock %}
 
 {% block content %}
 <section class="hero-row">
   <div>
-    <p class="subhead">Roles and invitations apply only to <strong>{{ current_workspace.name }}</strong>. A person can have a different role in another workspace.</p>
+    <p class="subhead">Roles and invitations apply to <strong>{{ current_workspace.name }}</strong>. Viewer accounts can inspect inventory and reports without changing operational data.</p>
   </div>
   <span class="workspace-handle">@{{ current_workspace.business_username }}</span>
 </section>
@@ -15,7 +15,7 @@
   <div class="stacked-panels">
     <article class="panel form-panel">
       <p class="eyebrow">DIRECT ACCOUNT</p><h2>Add a staff account</h2>
-      <p class="form-help">Create a password-based account immediately for this workspace.</p>
+      <p class="form-help">Create a password-based account immediately for this business.</p>
       <form method="post" class="data-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Name<input name="name" maxlength="255" required></label>
@@ -31,11 +31,11 @@
 
     <article class="panel form-panel">
       <p class="eyebrow ai-eyebrow">SECURE INVITATION</p><h2>Invite by email</h2>
-      <p class="form-help">The single-use link expires automatically. Existing StockPilot users can join without creating another account.</p>
+      <p class="form-help">The single-use link expires automatically. Each invited account is attached only to this business.</p>
       <form action="{{ url_for('web.invite_workspace_user') }}" method="post" class="data-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Email<input type="email" name="email" maxlength="255" required placeholder="teammate@example.com"></label>
-        <label>Workspace role<select name="role" required>{% for value, label in roles.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
+        <label>Business role<select name="role" required>{% for value, label in roles.items() %}<option value="{{ value }}">{{ label }}</option>{% endfor %}</select></label>
         <button class="button ai-button" type="submit">Send invitation</button>
       </form>
       {% if invitations %}<div class="pending-invites"><p class="eyebrow">PENDING</p>{% for invitation in invitations %}<div><span><b>{{ invitation.email }}</b><small>{{ invitation.payload_json.get('role', 'picker')|title }} · expires {{ invitation.expires_at.strftime('%d %b') }}</small></span><span class="mini-badge">Pending</span></div>{% endfor %}</div>{% endif %}
@@ -44,7 +44,7 @@
 
   <article class="panel table-panel">
     <div class="panel-header">
-      <div><p class="eyebrow">WORKSPACE MEMBERS</p><h2>{{ pagination.total }} user{{ '' if pagination.total == 1 else 's' }}</h2></div>
+      <div><p class="eyebrow">BUSINESS MEMBERS</p><h2>{{ pagination.total }} user{{ '' if pagination.total == 1 else 's' }}</h2></div>
     </div>
     <form class="table-filters" method="get">
       <label class="filter-search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search name or email"></label>

@@ -383,7 +383,7 @@ class ProductImportResult:
 
 class ProductCSVImporter:
     HEADER_ALIASES = {"unit": "unit_of_measure", "supplier_id": "preferred_supplier_id"}
-    IMPORTABLE_FIELDS = {
+    TEMPLATE_HEADERS = (
         "sku",
         "barcode",
         "name",
@@ -395,7 +395,32 @@ class ProductCSVImporter:
         "safety_stock",
         "is_perishable",
         "preferred_supplier_id",
-    }
+    )
+    IMPORTABLE_FIELDS = set(TEMPLATE_HEADERS)
+
+    @staticmethod
+    def template_bytes() -> bytes:
+        """Return a spreadsheet-friendly template aligned with the importer."""
+
+        output = io.StringIO(newline="")
+        writer = csv.DictWriter(output, fieldnames=ProductCSVImporter.TEMPLATE_HEADERS)
+        writer.writeheader()
+        writer.writerow(
+            {
+                "sku": "EXAMPLE-001",
+                "barcode": "890100000001",
+                "name": "Example product",
+                "category": "General",
+                "unit_of_measure": "piece",
+                "cost_price": "10.00",
+                "sell_price": "15.00",
+                "reorder_point": "20",
+                "safety_stock": "5",
+                "is_perishable": "false",
+                "preferred_supplier_id": "",
+            }
+        )
+        return output.getvalue().encode("utf-8-sig")
 
     @staticmethod
     def import_bytes(

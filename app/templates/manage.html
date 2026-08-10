@@ -5,8 +5,8 @@
 
 {% block content %}
 <section class="hero-row products-hero">
-  <div><p class="subhead">Add suppliers, locations, products, and auditable stock corrections without editing the database directly.</p></div>
-  <div class="inline-actions"><a class="button secondary" href="{{ url_for('web.suppliers_page') }}">Supplier directory</a><a class="button secondary" href="{{ url_for('web.locations_page') }}">Manage locations & bins</a><a class="button primary" href="{{ url_for('web.transfers_page') }}">Transfer stock</a></div>
+  <div><p class="subhead">Add suppliers and products, import a structured catalogue, and record auditable stock corrections.</p></div>
+  <div class="inline-actions"><a class="button secondary" href="{{ url_for('web.suppliers_page') }}">Supplier directory</a><a class="button secondary" href="{{ url_for('web.locations_page') }}">Warehouses & bins</a><a class="button primary" href="{{ url_for('web.transfers_page') }}">Transfer stock</a></div>
 </section>
 
 <section class="manage-grid">
@@ -20,17 +20,8 @@
       <button class="button primary">Add supplier</button>
     </form>
   </article>
-  <article class="panel form-panel">
-    <p class="eyebrow">STEP 2</p><h2>Add a location</h2>
-    <form action="{{ url_for('web.add_location_form') }}" method="post" class="data-form">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="form-row"><label>Location name<input name="name" required maxlength="120" placeholder="Main Store"></label><label>Code<input name="code" required maxlength="32" placeholder="MAIN"></label></div>
-      <label>Address<input name="address" maxlength="255" placeholder="Optional"></label>
-      <button class="button primary">Add location</button>
-    </form>
-  </article>
   <article class="panel form-panel wide">
-    <p class="eyebrow">STEP 3</p><h2>Add a product</h2>
+    <p class="eyebrow">STEP 2</p><h2>Add a product</h2>
     <form action="{{ url_for('web.add_product_form') }}" method="post" class="data-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-row triple"><label>SKU<input name="sku" required maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9._/-]*" placeholder="COFFEE-250"></label><label>Product name<input name="name" required maxlength="255" placeholder="Cold Coffee 250 ml"></label><label>Barcode<input name="barcode" maxlength="100" placeholder="Optional"></label></div>
@@ -42,7 +33,8 @@
   </article>
   <article class="panel form-panel wide">
     <p class="eyebrow">BULK CATALOGUE</p><h2>Import products from CSV</h2>
-    <p class="form-help">Required columns: <code>sku,name</code>. Imports are atomic: if any row is invalid, nothing is saved.</p>
+    <p class="form-help">Use the fixed StockPilot columns so Excel users do not have to guess the format. Delete the example row before entering your catalogue. Imports are atomic: if any row is invalid, nothing is saved.</p>
+    <div class="csv-template-callout"><span>CSV</span><div><strong>Start with the formatted template</strong><small>Includes every supported column and one example row.</small></div><a class="button secondary compact" href="{{ url_for('web.download_products_import_template') }}">Download template</a></div>
     <form action="{{ url_for('web.import_products_form') }}" method="post" enctype="multipart/form-data" class="data-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <label>CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
@@ -51,7 +43,7 @@
     </form>
   </article>
   <article class="panel form-panel wide">
-    <p class="eyebrow">STEP 4</p><h2>Adjust stock</h2>
+    <p class="eyebrow">STEP 3</p><h2>Adjust stock</h2>
     <p class="form-help">Use a positive number for received stock and a negative number for write-offs or count corrections.</p>
     <form action="{{ url_for('web.adjust_stock_form') }}" method="post" class="data-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

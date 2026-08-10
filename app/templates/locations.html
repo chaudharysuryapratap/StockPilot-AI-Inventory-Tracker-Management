@@ -1,44 +1,74 @@
 {% extends "base.html" %}
 
-{% block title %}Locations & bins · StockPilot AI{% endblock %}
-{% block heading %}Locations and bins{% endblock %}
+{% block title %}Warehouses & bins · StockPilot{% endblock %}
+{% block heading %}Warehouses and bins{% endblock %}
 
 {% block content %}
-<section class="hero-row products-hero">
-  <p class="subhead">Maintain warehouse locations, structured bin codes, and capacity limits.</p>
-  {% if current_user.role in ['admin', 'manager'] %}<a class="button primary" href="{{ url_for('web.manage_page') }}">Add location</a>{% endif %}
+<section class="hero-row warehouse-hero">
+  <div>
+    <p class="eyebrow">WAREHOUSE NETWORK</p>
+    <p class="subhead">Warehouses, storage bins, capacity, and live stock balances now live in one section.</p>
+  </div>
+  <a class="button secondary" href="{{ url_for('web.dashboard', scope='all') }}">Open command centre</a>
 </section>
 
+{% if current_user.role == 'admin' %}
+<section class="panel form-panel warehouse-create" id="add-warehouse">
+  <div class="panel-header">
+    <div><p class="eyebrow">ADMIN ONLY</p><h2>Add a new warehouse</h2><p class="form-help">Create the warehouse first, then add its aisle, rack, or staging bins below.</p></div>
+    <span class="mini-badge">Tenant isolated</span>
+  </div>
+  <form action="{{ url_for('web.add_location_form') }}" method="post" class="data-form warehouse-create-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-row triple">
+      <label>Warehouse name<input name="name" required maxlength="120" placeholder="North Distribution Centre"></label>
+      <label>Warehouse code<input name="code" required maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" placeholder="NORTH_DC"></label>
+      <label>Full address<input name="address" maxlength="255" placeholder="Street, city, state, postal code"></label>
+    </div>
+    <button class="button primary" type="submit">Add warehouse <span>→</span></button>
+  </form>
+</section>
+{% else %}
+<aside class="permission-note"><span>⌁</span><p><strong>Read-only warehouse view</strong><small>Only an Admin can add warehouses or change warehouse and bin configuration.</small></p></aside>
+{% endif %}
+
 <form class="table-filters panel" method="get">
-  <label class="filter-search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search location, code or address"></label>
-  <select name="state" aria-label="Location status"><option value="all">All statuses</option><option value="active" {% if state_filter == 'active' %}selected{% endif %}>Active</option><option value="inactive" {% if state_filter == 'inactive' %}selected{% endif %}>Inactive</option></select>
+  <label class="filter-search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search warehouse, code or address"></label>
+  <select name="state" aria-label="Warehouse status"><option value="all">All statuses</option><option value="active" {% if state_filter == 'active' %}selected{% endif %}>Active</option><option value="inactive" {% if state_filter == 'inactive' %}selected{% endif %}>Inactive</option></select>
   <button class="button secondary compact">Filter</button>
   {% if q or state_filter != 'all' %}<a class="text-link" href="{{ url_for('web.locations_page') }}">Clear</a>{% endif %}
-  <span class="filter-total">{{ pagination.total }} location{{ '' if pagination.total == 1 else 's' }}</span>
+  <span class="filter-total">{{ pagination.total }} warehouse{{ '' if pagination.total == 1 else 's' }}</span>
 </form>
 
-<section class="location-grid">
+<section class="location-grid warehouse-grid">
   {% for location in locations %}
-  <article class="panel form-panel location-card">
+  {% set stats = warehouse_stats[location.id] %}
+  <article class="panel form-panel location-card warehouse-card">
     <div class="panel-header">
       <div><p class="eyebrow">{{ location.code }}</p><h2>{{ location.name }}</h2><p class="form-help location-address">{{ location.address or 'No address provided' }}</p></div>
-      {% if current_user.role in ['admin', 'manager'] %}<a class="button secondary compact" href="{{ url_for('web.edit_location_form', location_id=location.id) }}">Edit</a>{% endif %}
+      <div class="inline-actions"><span class="{{ 'covered-tag' if location.is_active else 'action-tag' }}">{{ 'Active' if location.is_active else 'Inactive' }}</span>{% if current_user.role == 'admin' %}<a class="button secondary compact" href="{{ url_for('web.edit_location_form', location_id=location.id) }}">Edit warehouse</a>{% endif %}</div>
     </div>
+    <div class="warehouse-stats">
+      <span><small>On hand</small><strong>{{ stats.stock.quantity_on_hand }}</strong></span>
+      <span><small>Available</small><strong>{{ stats.stock.quantity_available }}</strong></span>
+      <span><small>Bins</small><strong>{{ stats.bins|length }}</strong></span>
+    </div>
+    <div class="bin-section-head"><div><p class="eyebrow">STORAGE MAP</p><h3>Bins and capacity</h3></div><span class="mini-badge">{{ stats.bins|length }} configured</span></div>
     <div class="bin-list">
       {% for bin in location.bins|sort(attribute='code') %}
-      <div class="bin-row"><div><strong>{{ bin.code }}</strong><small>{{ bin.capacity if bin.capacity else 'Unlimited' }} capacity · {{ 'Active' if bin.is_active else 'Inactive' }}</small></div>{% if current_user.role in ['admin', 'manager'] %}<a class="text-link" href="{{ url_for('web.edit_bin_form', bin_id=bin.id) }}">Edit</a>{% endif %}</div>
+      <div class="bin-row"><div><strong>{{ bin.code }}</strong><small>{{ bin.capacity if bin.capacity else 'Unlimited' }} capacity · {{ 'Active' if bin.is_active else 'Inactive' }}</small></div>{% if current_user.role == 'admin' %}<a class="text-link" href="{{ url_for('web.edit_bin_form', bin_id=bin.id) }}">Edit</a>{% endif %}</div>
       {% else %}
-      <p class="muted">No bins configured yet.</p>
+      <div class="empty-state compact-empty"><span>⌘</span><h3>No bins yet</h3><p>Add the first storage bin for this warehouse.</p></div>
       {% endfor %}
     </div>
-    {% if current_user.role in ['admin', 'manager'] %}<form action="{{ url_for('web.add_bin_form', location_id=location.id) }}" method="post" class="data-form bin-form">
+    {% if current_user.role == 'admin' %}<form action="{{ url_for('web.add_bin_form', location_id=location.id) }}" method="post" class="data-form bin-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="form-row"><label>New bin code<input name="code" maxlength="50" required placeholder="A-12-3"></label><label>Capacity<input type="number" name="capacity" min="1" step="1" placeholder="Optional"></label></div>
-      <button class="button secondary">Add bin</button>
+      <button class="button secondary" type="submit">Add bin</button>
     </form>{% endif %}
   </article>
   {% else %}
-  <article class="panel form-panel"><p>No locations have been added.</p></article>
+  <article class="panel form-panel empty-state warehouse-empty"><span>⌘</span><h3>No warehouses found</h3><p>{% if q %}Clear the search to see other warehouses.{% elif current_user.role == 'admin' %}Use the form above to add the first warehouse.{% else %}Ask an Admin to configure the first warehouse.{% endif %}</p></article>
   {% endfor %}
 </section>
 {% include "_pagination.html" %}

@@ -20,6 +20,7 @@ from app.schema import (
     SPRINT_7_SCHEMA_VERSION,
     SPRINT_8_SCHEMA_VERSION,
     SPRINT_9_SCHEMA_VERSION,
+    SPRINT_10_SCHEMA_VERSION,
     migrate_schema,
 )
 
@@ -47,7 +48,7 @@ def test_explicit_migration_initializes_an_empty_database(tmp_path):
         tables = set(inspect(db.engine).get_table_names())
 
         assert first.applied is True
-        assert first.version == SPRINT_9_SCHEMA_VERSION
+        assert first.version == SPRINT_10_SCHEMA_VERSION
         assert second.applied is False
         assert {
             "products",
@@ -358,7 +359,7 @@ def test_sprint1_migration_preserves_legacy_stock_data(tmp_path):
 
         assert first.applied is True
         assert second.applied is False
-        assert first.version == SPRINT_9_SCHEMA_VERSION
+        assert first.version == SPRINT_10_SCHEMA_VERSION
         assert first.applied_versions == (
             SPRINT_1_SCHEMA_VERSION,
             SPRINT_2_SCHEMA_VERSION,
@@ -369,6 +370,7 @@ def test_sprint1_migration_preserves_legacy_stock_data(tmp_path):
             SPRINT_7_SCHEMA_VERSION,
             SPRINT_8_SCHEMA_VERSION,
             SPRINT_9_SCHEMA_VERSION,
+            SPRINT_10_SCHEMA_VERSION,
         )
         assert "quantity_on_hand" in columns
         assert "quantity_reserved" in columns

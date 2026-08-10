@@ -33,3 +33,5 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+/live-preview.db
+/visual-qa.db

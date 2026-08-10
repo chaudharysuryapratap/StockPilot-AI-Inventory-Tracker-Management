@@ -16,7 +16,7 @@
           <span class="auth-kicker">YOUR INVENTORY, IN CONTROL</span>
           <h1>Welcome back to your stockroom.</h1>
           <p>One calm workspace for demand, purchasing, warehouse execution, and every stock movement in between.</p>
-          <div class="auth-proof"><span>✦ AI demand signals</span><span>✓ Exact stock ledger</span><span>⌘ Multi-workspace access</span></div>
+          <div class="auth-proof"><span>✦ AI demand signals</span><span>✓ Exact stock ledger</span><span>⌘ Multi-warehouse control</span></div>
         </div>
         <div class="auth-card-wrap">
           <article class="auth-card">
@@ -32,15 +32,15 @@
               <label>Email address<div class="input-shell"><span>✉</span><input type="email" name="identifier" autocomplete="username" placeholder="you@business.com" required autofocus></div></label>
               <label>Password<div class="input-shell"><span>⌁</span><input id="login-password" type="password" name="password" autocomplete="current-password" required><button class="password-toggle" type="button" data-password-toggle="login-password" aria-label="Show password">Show</button></div></label>
               <div class="auth-form-meta"><span>Protected with secure sessions and optional MFA.</span><a href="{{ url_for('web.forgot_password') }}">Forgot password?</a></div>
-              <button class="button primary auth-submit" type="submit">Enter your workspace <span>→</span></button>
+              <button class="button primary auth-submit" type="submit">Enter your business <span>→</span></button>
             </form>
             <div class="auth-divider"><span>or</span></div>
             <a id="sso-login-link" class="button secondary auth-sso disabled" href="#" aria-disabled="true"><span class="sso-mark">S</span> Continue with business SSO</a>
-            {% if allow_signup %}<p class="auth-switch">New to StockPilot? <a href="{{ url_for('web.signup') }}">Create your business workspace</a></p>{% endif %}
+            {% if allow_signup %}<p class="auth-switch">New to StockPilot? <a href="{{ url_for('web.signup') }}">Create your business account</a></p>{% endif %}
           </article>
         </div>
       </section>
-      <p class="auth-footer">StockPilot · Workspace-isolated inventory operations</p>
+      <p class="auth-footer">StockPilot · Business-isolated inventory operations</p>
     </main>
     <script src="{{ url_for('static', filename='auth.js') }}" defer></script>
     <script src="{{ url_for('static', filename='ui.js') }}" defer></script>

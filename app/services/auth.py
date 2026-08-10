@@ -13,11 +13,12 @@ from app.models import InventoryLocation, User, Workspace, WorkspaceMembership
 from app.services.identity import ensure_default_identity, normalize_business_username
 
 
-ROLES = ("admin", "manager", "picker")
+ROLES = ("admin", "manager", "picker", "viewer")
 ROLE_LABELS = {
     "admin": "Admin",
     "manager": "Manager",
     "picker": "Picker",
+    "viewer": "Viewer",
 }
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD_LENGTH = 10
@@ -71,7 +72,7 @@ def _password(value: object, *, required: bool = True) -> str | None:
 def _role(value: object) -> str:
     normalized = str(value or "").strip().lower()
     if normalized not in ROLES:
-        raise ValueError("must be admin, manager, or picker")
+        raise ValueError("must be admin, manager, picker, or viewer")
     return normalized
 
 

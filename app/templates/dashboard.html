@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 
 {% block title %}Overview · StockPilot{% endblock %}
-{% block heading %}{% if current_user.role == 'picker' %}Your shift at a glance.{% elif current_user.role == 'manager' %}Today’s inventory decisions.{% else %}Inventory command centre.{% endif %}{% endblock %}
+{% block heading %}{% if current_user.role == 'picker' %}Your shift at a glance.{% elif current_user.role == 'manager' %}Today’s inventory decisions.{% elif current_user.role == 'viewer' %}Inventory at a glance.{% else %}Inventory command centre.{% endif %}{% endblock %}
 
 {% block content %}
 <section class="hero-row dashboard-hero">
   <div>
     <p class="eyebrow">Inventory, without the guesswork.</p>
-    <p class="subhead">{% if current_user.role == 'picker' %}Move the next order accurately, scan exceptions, and keep the ledger current.{% else %}See demand, supply risk, expiry exposure, and the actions your team should take next.{% endif %}</p>
+    <p class="subhead">{% if current_user.role == 'picker' %}Move the next order accurately, scan exceptions, and keep the ledger current.{% elif current_user.role == 'viewer' %}Explore live stock, warehouse coverage, demand, and risk without changing operational data.{% else %}See demand, supply risk, expiry exposure, and the actions your team should take next.{% endif %}</p>
   </div>
   <div class="hero-actions">
     {% if current_user.role == 'picker' %}
@@ -16,6 +16,9 @@
     {% elif current_user.role == 'manager' %}
       <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review AI orders</a>
       <a class="button primary" href="{{ url_for('web.orders_page') }}">Manage today’s orders <span>→</span></a>
+    {% elif current_user.role == 'viewer' %}
+      <a class="button secondary" href="{{ url_for('web.locations_page') }}">Browse warehouses</a>
+      <a class="button primary" href="{{ url_for('web.reports_page') }}">Open reports <span>→</span></a>
     {% else %}
       <a class="button ai-button" href="{{ url_for('web.purchase_orders_page') }}">✦ Review AI orders</a>
       <a class="button secondary" href="{{ url_for('web.users_page') }}">Manage team access</a>
@@ -24,10 +27,21 @@
   </div>
 </section>
 
+<section class="panel inventory-scope" aria-label="Inventory dashboard scope">
+  <div class="scope-copy"><span class="scope-icon">⌘</span><div><p class="eyebrow">INVENTORY SCOPE</p><h2>{{ 'Inventory Command Centre' if dashboard_scope == 'all' else selected_warehouse.name }}</h2><p>{{ 'All warehouses are combined below.' if dashboard_scope == 'all' else 'Dashboard details are filtered to this warehouse.' }}</p></div></div>
+  <div class="scope-controls">
+    <div class="scope-toggle" role="group" aria-label="Choose inventory scope">
+      <a href="{{ url_for('web.dashboard', scope='warehouse', warehouse_id=(selected_warehouse.id if selected_warehouse else (warehouses[0].id if warehouses else ''))) }}" class="{% if dashboard_scope == 'warehouse' %}active{% endif %}"><span>▣</span> Warehouse</a>
+      <a href="{{ url_for('web.dashboard', scope='all') }}" class="{% if dashboard_scope == 'all' %}active{% endif %}"><span>⌘</span> Command centre</a>
+    </div>
+    {% if dashboard_scope == 'warehouse' and warehouses %}<form method="get" class="warehouse-select"><input type="hidden" name="scope" value="warehouse"><label class="sr-only" for="dashboard-warehouse">Choose warehouse</label><select id="dashboard-warehouse" name="warehouse_id" data-auto-submit>{% for warehouse in warehouses %}<option value="{{ warehouse.id }}" {% if selected_warehouse and warehouse.id == selected_warehouse.id %}selected{% endif %}>{{ warehouse.name }} · {{ warehouse.code }}</option>{% endfor %}</select><button class="button secondary compact" type="submit">Apply</button></form>{% endif %}
+  </div>
+</section>
+
 <section class="metric-grid" aria-label="Inventory summary">
   <article class="metric-card">
     <span class="metric-icon">▦</span>
-    <div><span class="metric-label">Active products</span><strong>{{ metrics.active_products }}</strong><small>Across {{ metrics.locations }} location{{ '' if metrics.locations == 1 else 's' }}</small></div>
+    <div><span class="metric-label">{{ 'Stocked products' if dashboard_scope == 'warehouse' else 'Active products' }}</span><strong>{{ metrics.active_products }}</strong><small>Across {{ metrics.locations }} warehouse{{ '' if metrics.locations == 1 else 's' }}</small></div>
   </article>
   <article class="metric-card healthy">
     <span class="metric-icon">▥</span>
@@ -42,6 +56,15 @@
     <div><span class="metric-label">Forecast status</span><strong>{{ 'Ready' if insights else 'Pending' }}</strong><small>{% if insights %}{{ insights|length }} model recommendations{% else %}Waiting for analysis{% endif %}</small></div>
   </article>
 </section>
+
+{% if dashboard_scope == 'all' %}
+<section class="panel warehouse-network-panel">
+  <div class="panel-header"><div><p class="eyebrow">WAREHOUSE NETWORK</p><h2>Every warehouse, one command centre</h2><p class="panel-note">Switch to a warehouse above for its focused dashboard.</p></div><a class="text-link" href="{{ url_for('web.locations_page') }}">Warehouse details <span>→</span></a></div>
+  <div class="warehouse-summary-grid">
+    {% for warehouse in warehouse_summaries %}<a class="warehouse-summary-card" href="{{ url_for('web.dashboard', scope='warehouse', warehouse_id=warehouse.id) }}"><div><span class="warehouse-code">{{ warehouse.code }}</span><strong>{{ warehouse.name }}</strong><small>{{ warehouse.address or 'No address provided' }}</small></div><dl><div><dt>On hand</dt><dd>{{ warehouse.stock.quantity_on_hand }}</dd></div><div><dt>Available</dt><dd>{{ warehouse.stock.quantity_available }}</dd></div><div><dt>Products</dt><dd>{{ warehouse.products }}</dd></div><div><dt>Bins</dt><dd>{{ warehouse.bins }}</dd></div></dl><span class="risk-pill {{ 'critical' if warehouse.risks else 'healthy' }}">{{ warehouse.risks }} risk{{ '' if warehouse.risks == 1 else 's' }}</span></a>{% else %}<div class="empty-state"><span>⌘</span><h3>No warehouses configured</h3><p>{% if current_user.role == 'admin' %}Add the first warehouse from Warehouses & bins.{% else %}Ask an Admin to configure a warehouse.{% endif %}</p></div>{% endfor %}
+  </div>
+</section>
+{% endif %}
 
 {% if current_user.role != 'picker' %}
 <section class="insight-visuals" aria-label="Demand and forecast accuracy">
@@ -120,7 +143,7 @@
       {% endfor %}
       {% if not recommendations.near_expiry and not recommendations.dead_stock %}<div class="empty-state compact-empty"><span>✓</span><h3>No ageing action needed</h3><p>There are no near-expiry or dead-stock candidates.</p></div>{% endif %}
     </div>
-    <a href="{{ url_for('web.purchase_orders_page') }}" class="text-link">Open expiry controls <span>→</span></a>
+    <a href="{{ url_for('web.reports_page') if current_user.role == 'viewer' else url_for('web.purchase_orders_page') }}" class="text-link">{{ 'Open inventory reports' if current_user.role == 'viewer' else 'Open expiry controls' }} <span>→</span></a>
   </aside>
   {% endif %}
 </section>
@@ -150,10 +173,10 @@
   </div>{% else %}<div class="empty-state"><span>✦</span><h3>No forecast factors yet</h3><p>Explanations will appear with the next inventory analysis.</p></div>{% endif %}
 </section>
 
-<section class="panel assistant-panel ai-surface" id="inventory-assistant" data-chat-url="{{ url_for('api.dashboard_chat_api') }}" data-csrf-token="{{ csrf_token() }}">
+<section class="panel assistant-panel ai-surface" id="inventory-assistant" data-chat-url="{{ url_for('api.dashboard_chat_api') }}" data-csrf-token="{{ csrf_token() }}" data-warehouse-id="{{ selected_warehouse.id if dashboard_scope == 'warehouse' and selected_warehouse else '' }}">
   <div class="assistant-intro">
     <span class="assistant-mark">✦</span>
-    <div><p class="eyebrow ai-eyebrow">STOCKPILOT ASSISTANT</p><h2>Ask your live inventory</h2><p class="panel-note">Answers use this workspace’s demand, forecast accuracy, expiry, and stock-risk data.</p></div>
+    <div><p class="eyebrow ai-eyebrow">STOCKPILOT ASSISTANT</p><h2>Ask your live inventory</h2><p class="panel-note">Answers use {{ selected_warehouse.name if dashboard_scope == 'warehouse' and selected_warehouse else 'all warehouses' }} for demand, forecast accuracy, expiry, and stock risk.</p></div>
   </div>
   <div class="assistant-prompts" aria-label="Suggested questions">
     <button type="button" data-assistant-prompt="What demand changed?">Demand changes</button><button type="button" data-assistant-prompt="What stock is most at risk?">Stock risks</button><button type="button" data-assistant-prompt="What is near expiry?">Near expiry</button><button type="button" data-assistant-prompt="How accurate are our forecasts?">Forecast accuracy</button>

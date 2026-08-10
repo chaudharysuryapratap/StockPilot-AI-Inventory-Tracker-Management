@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}Profile settings · StockPilot{% endblock %}
+{% block heading %}Profile settings{% endblock %}
+
+{% block content %}
+<section class="hero-row profile-hero">
+  <div><p class="subhead">Keep your personal account details current. Business identity and role access remain Admin-managed.</p></div>
+  <span class="role-tag {{ current_user.role }}">{{ role_labels.get(current_user.role, current_user.role) }}</span>
+</section>
+
+<section class="profile-settings-grid">
+  <article class="panel form-panel profile-card">
+    <div class="profile-card-head"><span class="user-avatar profile-avatar">{{ current_user.name[:1]|upper }}</span><div><p class="eyebrow">PERSONAL DETAILS</p><h2>{{ current_user.name }}</h2><p class="form-help">Member since {{ current_user.created_at.strftime('%d %b %Y') }}</p></div></div>
+    <form method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Full name<input name="name" value="{{ current_user.name }}" maxlength="255" autocomplete="name" required></label>
+      <label>Email address<input type="email" name="email" value="{{ current_user.email }}" maxlength="255" autocomplete="email" required><small>Changing this address requires verification when email verification is enabled.</small></label>
+      <button class="button primary" type="submit">Save profile</button>
+    </form>
+  </article>
+
+  <aside class="profile-settings-aside">
+    <article class="panel form-panel">
+      <p class="eyebrow">ACCESS SUMMARY</p><h2>{{ current_workspace.name }}</h2>
+      <dl class="profile-facts"><div><dt>Business username</dt><dd>@{{ current_workspace.business_username }}</dd></div><div><dt>Your role</dt><dd>{{ role_labels.get(current_user.role, current_user.role) }}</dd></div><div><dt>Email status</dt><dd>{{ 'Verified' if current_user.email_verified_at else 'Verification pending' }}</dd></div></dl>
+    </article>
+    <article class="panel profile-security-card"><span>⌁</span><div><h3>Account security</h3><p>Manage MFA, recovery codes, and your sign-in protection.</p></div><a class="button secondary compact" href="{{ url_for('web.security_page') }}">Security settings</a></article>
+  </aside>
+</section>
+{% endblock %}

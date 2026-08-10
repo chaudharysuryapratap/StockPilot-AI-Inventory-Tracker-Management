@@ -18,7 +18,7 @@
   {% if q or status_filter %}<a class="text-link" href="{{ url_for('web.orders_page') }}">Clear</a>{% endif %}
 </form>
 
-<section class="content-grid order-layout {% if current_user.role == 'picker' %}order-list-only{% endif %}">
+<section class="content-grid order-layout {% if current_user.role in ['picker', 'viewer'] %}order-list-only{% endif %}">
   {% if current_user.role in ['admin', 'manager'] %}
     <article class="panel form-panel order-create-panel">
       <p class="eyebrow">MANUAL ORDER</p>
