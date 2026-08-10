@@ -16,8 +16,8 @@
       <aside class="sidebar" id="primary-sidebar">
         <div class="sidebar-top">
           <a class="brand" href="{{ url_for('web.dashboard') }}" aria-label="StockPilot overview">
-            <span class="brand-mark"><b>SP</b></span>
-            <span class="brand-copy"><strong>StockPilot</strong><small>Inventory control</small></span>
+            <img class="brand-symbol" src="{{ url_for('static', filename='stockpilot-icon.svg', v=asset_version) }}" alt="" width="40" height="40">
+            <span class="brand-copy"><strong class="brand-name"><span>Stock</span><span>Pilot</span></strong><small>Inventory control</small></span>
           </a>
           <button class="icon-button sidebar-close" id="sidebar-close" type="button" aria-label="Close navigation">×</button>
         </div>

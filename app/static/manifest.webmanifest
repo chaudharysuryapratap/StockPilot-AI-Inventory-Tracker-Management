@@ -5,8 +5,8 @@
   "start_url": "/picker",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f4f6fa",
-  "theme_color": "#111d37",
+  "background_color": "#EEF1F0",
+  "theme_color": "#1F2623",
   "icons": [
     {
       "src": "/static/stockpilot-icon.svg",
