@@ -453,7 +453,7 @@ def inject_csrf_token():
         "role_labels": ROLE_LABELS,
         "report_currency": current_app.config["REPORT_CURRENCY"],
         "allow_signup": current_app.config.get("ALLOW_WEB_SIGNUP", False),
-        "asset_version": current_app.config.get("ASSET_VERSION", "20260810.3"),
+        "asset_version": current_app.config.get("ASSET_VERSION", "20260810.4"),
         "current_workspace": getattr(g, "active_workspace", None),
         "current_membership": getattr(g, "active_membership", None),
         "workspace_memberships": (
@@ -1678,6 +1678,49 @@ def archive_product_form(product_id: int):
     ProductService.archive(product)
     flash(f"{product.name} was archived. Its history and stock were preserved.", "success")
     return redirect(url_for("web.products_page", include_archived=1))
+
+
+@web_bp.post("/products/archive-selected")
+@roles_required("admin", "manager")
+def archive_selected_products_form():
+    actor = _current_actor()
+    selected_ids: set[int] = set()
+    for raw_id in request.form.getlist("product_ids"):
+        try:
+            product_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if product_id > 0:
+            selected_ids.add(product_id)
+
+    if not selected_ids:
+        flash("Select at least one active product to remove.", "error")
+        return redirect(url_for("web.products_page"))
+
+    products = (
+        Product.query.filter(
+            Product.workspace_id == actor.workspace_id,
+            Product.id.in_(selected_ids),
+            Product.is_active.is_(True),
+        )
+        .order_by(Product.name, Product.id)
+        .all()
+    )
+    if not products:
+        flash("None of the selected products are active in this business.", "error")
+        return redirect(url_for("web.products_page"))
+
+    for product in products:
+        ProductService.archive(product, commit=False)
+    db.session.commit()
+
+    count = len(products)
+    flash(
+        f"{count} product{'s' if count != 1 else ''} removed from active inventory. "
+        "Their stock and history were preserved.",
+        "success",
+    )
+    return redirect(url_for("web.products_page"))
 
 
 @web_bp.post("/products/<int:product_id>/restore")

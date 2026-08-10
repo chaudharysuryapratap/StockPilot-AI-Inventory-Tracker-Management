@@ -28,12 +28,27 @@
     </div>
     <span class="muted">Every balance below comes from the stock-level ledger.</span>
   </div>
+  {% if current_user.role in ['admin', 'manager'] %}
+  <form class="bulk-product-actions" id="bulk-product-form" action="{{ url_for('web.archive_selected_products_form') }}" method="post" data-bulk-product-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="bulk-selection-summary">
+      <strong id="product-selection-count" aria-live="polite">0 selected</strong>
+      <span id="bulk-removal-note">Removed products are archived while their stock ledger and history stay preserved.</span>
+    </div>
+    <button class="button danger compact" type="submit" data-remove-selected aria-describedby="bulk-removal-note" disabled>Remove selected</button>
+  </form>
+  {% endif %}
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Product</th><th>SKU / barcode</th><th>Category</th><th>Pricing</th><th>Status</th><th>Stock by location</th><th>Actions</th></tr></thead>
+      <thead><tr>{% if current_user.role in ['admin', 'manager'] %}<th class="selection-column" data-sortable="false"><input type="checkbox" id="select-all-products" aria-label="Select all active products on this page"></th>{% endif %}<th>Product</th><th>SKU / barcode</th><th>Category</th><th>Pricing</th><th>Status</th><th>Stock by location</th><th>Actions</th></tr></thead>
       <tbody>
       {% for product in products %}
         <tr>
+          {% if current_user.role in ['admin', 'manager'] %}
+          <td class="selection-column">
+            {% if product.is_active %}<input type="checkbox" name="product_ids" value="{{ product.id }}" form="bulk-product-form" data-product-row-checkbox aria-label="Select {{ product.name }}">{% else %}<span class="selection-unavailable" aria-label="Archived product cannot be selected">—</span>{% endif %}
+          </td>
+          {% endif %}
           <td><strong>{{ product.name }}</strong><small>{{ product.unit_of_measure }}{% if current_user.role != 'picker' %} · {{ product.preferred_supplier.name if product.preferred_supplier else 'No preferred supplier' }}{% endif %}</small></td>
           <td><code>{{ product.sku }}</code><small>{{ product.barcode or 'No barcode' }}</small></td>
           <td>{{ product.category }}<small>{{ 'Perishable' if product.is_perishable else 'Non-perishable' }}</small></td>
@@ -62,7 +77,7 @@
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="7" class="empty-row">No products yet. Add one from Manage inventory or <code>POST /api/products</code>.</td></tr>
+        <tr><td colspan="{{ 8 if current_user.role in ['admin', 'manager'] else 7 }}" class="empty-row">No products yet. Add one from Manage inventory or <code>POST /api/products</code>.</td></tr>
       {% endfor %}
       </tbody>
     </table>

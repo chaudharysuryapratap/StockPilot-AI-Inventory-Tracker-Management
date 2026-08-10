@@ -156,6 +156,7 @@
     applyFilters();
 
     headers.forEach((header, columnIndex) => {
+      if (header.dataset.sortable === "false") return;
       header.dataset.sortable = "true";
       header.tabIndex = 0;
       header.setAttribute("role", "button");
@@ -185,9 +186,51 @@
 
   document.querySelectorAll(".table-wrap table").forEach(enhanceTable);
 
+  const bulkProductForm = document.querySelector("[data-bulk-product-form]");
+  const selectAllProducts = document.getElementById("select-all-products");
+  const productCheckboxes = Array.from(document.querySelectorAll("[data-product-row-checkbox]"));
+  const removeSelectedButton = document.querySelector("[data-remove-selected]");
+  const productSelectionCount = document.getElementById("product-selection-count");
+
+  if (bulkProductForm && selectAllProducts && removeSelectedButton && productSelectionCount) {
+    function syncProductSelection() {
+      const selected = productCheckboxes.filter((checkbox) => checkbox.checked);
+      productCheckboxes.forEach((checkbox) => {
+        checkbox.closest("tr")?.classList.toggle("is-selected", checkbox.checked);
+      });
+      productSelectionCount.textContent = `${selected.length} selected`;
+      removeSelectedButton.disabled = selected.length === 0;
+      selectAllProducts.disabled = productCheckboxes.length === 0;
+      selectAllProducts.checked = productCheckboxes.length > 0 && selected.length === productCheckboxes.length;
+      selectAllProducts.indeterminate = selected.length > 0 && selected.length < productCheckboxes.length;
+    }
+
+    selectAllProducts.addEventListener("change", () => {
+      productCheckboxes.forEach((checkbox) => {
+        checkbox.checked = selectAllProducts.checked;
+      });
+      syncProductSelection();
+    });
+    productCheckboxes.forEach((checkbox) => checkbox.addEventListener("change", syncProductSelection));
+    bulkProductForm.addEventListener("submit", (event) => {
+      const selectedCount = productCheckboxes.filter((checkbox) => checkbox.checked).length;
+      if (!selectedCount) {
+        event.preventDefault();
+        syncProductSelection();
+        return;
+      }
+      const noun = selectedCount === 1 ? "product" : "products";
+      if (!window.confirm(`Remove ${selectedCount} selected ${noun} from active inventory? Stock and history will be preserved.`)) {
+        event.preventDefault();
+      }
+    });
+    syncProductSelection();
+  }
+
   document.querySelectorAll("form[method='post']").forEach((form) => {
     if (form.id === "assistant-form") return;
-    form.addEventListener("submit", () => {
+    form.addEventListener("submit", (event) => {
+      if (event.defaultPrevented) return;
       if (!form.checkValidity()) return;
       const button = form.querySelector("button[type='submit']");
       if (!button || button.dataset.loading === "true") return;

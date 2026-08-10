@@ -1,5 +1,5 @@
 from app import db
-from app.models import User, WorkspaceMembership
+from app.models import Product, StockLevel, User, Workspace, WorkspaceMembership
 
 
 def _set_default_role(app, role):
@@ -93,3 +93,76 @@ def test_product_can_be_created_inside_purchasing_workflow(client, app, seeded_c
 
         created = Product.query.filter_by(sku="FLOW-001").one()
         assert created.preferred_supplier_id == seeded_catalog["supplier_id"]
+
+
+def test_product_catalogue_bulk_removal_is_scoped_and_preserves_stock(
+    client, app, seeded_catalog
+):
+    with app.app_context():
+        other_workspace = Workspace(
+            name="Other business", business_username="other-business"
+        )
+        db.session.add(other_workspace)
+        db.session.flush()
+        other_product = Product(
+            workspace_id=other_workspace.id,
+            sku="OTHER-001",
+            name="Other business product",
+            category="General",
+            unit_of_measure="unit",
+        )
+        db.session.add(other_product)
+        db.session.commit()
+        other_product_id = other_product.id
+
+    page = client.get("/products")
+    assert page.status_code == 200
+    assert b'id="bulk-product-form"' in page.data
+    assert b'id="select-all-products"' in page.data
+    assert b"Remove selected" in page.data
+
+    removed = client.post(
+        "/products/archive-selected",
+        data={
+            "product_ids": [
+                str(seeded_catalog["product_id"]),
+                str(other_product_id),
+                "not-an-id",
+            ]
+        },
+        follow_redirects=True,
+    )
+    assert removed.status_code == 200
+    assert b"1 product removed from active inventory" in removed.data
+
+    with app.app_context():
+        assert db.session.get(Product, seeded_catalog["product_id"]).is_active is False
+        assert db.session.get(Product, other_product_id).is_active is True
+        stock = StockLevel.query.filter_by(
+            product_id=seeded_catalog["product_id"]
+        ).one()
+        assert stock.quantity_on_hand == 10
+
+
+def test_picker_cannot_bulk_remove_products(client, app, seeded_catalog):
+    _set_default_role(app, "picker")
+
+    page = client.get("/products")
+    assert page.status_code == 200
+    assert b'id="bulk-product-form"' not in page.data
+    assert b'id="select-all-products"' not in page.data
+
+    forbidden = client.post(
+        "/products/archive-selected",
+        data={"product_ids": str(seeded_catalog["product_id"])},
+    )
+    assert forbidden.status_code == 403
+
+
+def test_scanner_result_uses_contained_matched_product_layout(client, seeded_catalog):
+    page = client.get("/scanner")
+
+    assert page.status_code == 200
+    assert b'class="panel-header scanner-result-header"' in page.data
+    assert b'id="result-name"' in page.data
+    assert b'class="table-wrap scan-stock-table"' in page.data
