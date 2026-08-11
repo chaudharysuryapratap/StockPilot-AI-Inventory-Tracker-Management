@@ -1,0 +1,31 @@
+[Unit]
+Description=StockPilot AI inventory dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=inventory
+Group=inventory
+WorkingDirectory=/opt/ai-inventory-tracker
+EnvironmentFile=/etc/ai-inventory-tracker.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/ai-inventory-tracker/.venv/bin/flask --app run migrate-schema
+ExecStart=/opt/ai-inventory-tracker/.venv/bin/gunicorn --workers 2 --threads 4 --bind 127.0.0.1:8000 --access-logfile - --error-logfile - run:app
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/opt/ai-inventory-tracker/instance
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

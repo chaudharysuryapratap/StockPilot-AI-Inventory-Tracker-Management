@@ -1,0 +1,9 @@
+{% if pagination %}
+<nav class="pagination-bar" aria-label="Pagination">
+  <span>Showing {{ pagination.count }} item{{ '' if pagination.count == 1 else 's' }} of <strong>{{ pagination.total }}</strong></span>
+  <div class="pagination-actions">
+    {% if pagination.previous_url %}<a class="button secondary compact" href="{{ pagination.previous_url }}"><span>←</span> Previous page</a>{% endif %}
+    {% if pagination.next_url %}<a class="button secondary compact" href="{{ pagination.next_url }}">Next page <span>→</span></a>{% else %}<span class="mini-badge">End of results</span>{% endif %}
+  </div>
+</nav>
+{% endif %}

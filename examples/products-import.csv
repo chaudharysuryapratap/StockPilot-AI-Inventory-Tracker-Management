@@ -1,0 +1,4 @@
+sku,name,barcode,category,unit_of_measure,cost_price,sell_price,reorder_point,safety_stock,is_perishable,preferred_supplier_id
+MILK-1L,Full Cream Milk 1 L,890100000001,Dairy,bottle,48.50,55.00,24,8,true,
+RICE-5KG,Basmati Rice 5 kg,890100000002,Grocery,bag,410.00,520.00,18,12,false,
+WRAP-BOX,Food Wrap Box,890100000003,Packaging,box,42.00,65.00,10,8,false,

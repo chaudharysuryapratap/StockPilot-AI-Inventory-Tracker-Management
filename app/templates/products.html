@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Products · StockPilot AI{% endblock %}
+{% block heading %}Products & stock levels{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div><p class="subhead">Live quantities grouped by your business locations.</p></div>
+  <div class="inline-actions">
+    <a class="button secondary" href="{{ url_for('web.products_page', include_archived=0 if include_archived else 1) }}">{{ 'Hide archived' if include_archived else 'Show archived' }}</a>
+    <a class="button secondary" href="{{ url_for('api.products_api') }}" target="_blank">Open products API <span>↗</span></a>
+  </div>
+</section>
+
+<form class="table-filters panel" method="get">
+  <label class="filter-search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search name, SKU, barcode or category"></label>
+  {% if include_archived %}<input type="hidden" name="include_archived" value="1">{% endif %}
+  <select name="limit" aria-label="Rows per page">{% for amount in [10,25,50,100] %}<option value="{{ amount }}" {% if pagination.limit == amount %}selected{% endif %}>{{ amount }} per page</option>{% endfor %}</select>
+  <button class="button secondary compact">Search</button>
+  {% if q %}<a class="text-link" href="{{ url_for('web.products_page', include_archived=1 if include_archived else 0) }}">Clear</a>{% endif %}
+</form>
+
+<section class="panel table-panel">
+  <div class="panel-header">
+    <div>
+      <p class="eyebrow">PRODUCT CATALOGUE</p>
+      <h2>{{ pagination.total }} tracked product{{ '' if pagination.total == 1 else 's' }}</h2>
+    </div>
+    <span class="muted">Every balance below comes from the stock-level ledger.</span>
+  </div>
+  {% if current_user.role in ['admin', 'manager'] %}
+  <form class="bulk-product-actions" id="bulk-product-form" action="{{ url_for('web.archive_selected_products_form') }}" method="post" data-bulk-product-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="bulk-selection-summary">
+      <strong id="product-selection-count" aria-live="polite">0 selected</strong>
+      <span id="bulk-removal-note">Removed products are archived while their stock ledger and history stay preserved.</span>
+    </div>
+    <button class="button danger compact" type="submit" data-remove-selected aria-describedby="bulk-removal-note" disabled>Remove selected</button>
+  </form>
+  {% endif %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr>{% if current_user.role in ['admin', 'manager'] %}<th class="selection-column" data-sortable="false"><input type="checkbox" id="select-all-products" aria-label="Select all active products on this page"></th>{% endif %}<th>Product</th><th>SKU / barcode</th><th>Category</th><th>Pricing</th><th>Status</th><th>Stock by location</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for product in products %}
+        <tr>
+          {% if current_user.role in ['admin', 'manager'] %}
+          <td class="selection-column">
+            {% if product.is_active %}<input type="checkbox" name="product_ids" value="{{ product.id }}" form="bulk-product-form" data-product-row-checkbox aria-label="Select {{ product.name }}">{% else %}<span class="selection-unavailable" aria-label="Archived product cannot be selected">—</span>{% endif %}
+          </td>
+          {% endif %}
+          <td><strong>{{ product.name }}</strong><small>{{ product.unit_of_measure }}{% if current_user.role != 'picker' %} · {{ product.preferred_supplier.name if product.preferred_supplier else 'No preferred supplier' }}{% endif %}</small></td>
+          <td><code>{{ product.sku }}</code><small>{{ product.barcode or 'No barcode' }}</small></td>
+          <td>{{ product.category }}<small>{{ 'Perishable' if product.is_perishable else 'Non-perishable' }}</small></td>
+          <td>{% if current_user.role == 'picker' %}<span class="muted">Restricted</span>{% else %}{{ report_currency }} {{ '%.2f'|format(product.sell_price) }}<small>Cost {{ report_currency }} {{ '%.2f'|format(product.cost_price) }}</small>{% endif %}</td>
+          <td><span class="{{ 'covered-tag' if product.is_active else 'action-tag' }}">{{ 'Active' if product.is_active else 'Archived' }}</span><small>Reorder at {{ product.reorder_point }}</small></td>
+          <td>
+            <div class="stock-pills">
+            {% for level in product.stock_levels %}
+              <span><b>{{ level.location.code }}</b> {{ level.quantity_available }} available <small>{{ level.quantity_on_hand }} on hand · {{ level.quantity_reserved }} reserved</small></span>
+            {% else %}
+              <span class="empty-pill">Not stocked</span>
+            {% endfor %}
+            </div>
+          </td>
+          <td>
+            {% if current_user.role in ['admin', 'manager'] %}
+            <div class="table-actions">
+              <a class="button secondary compact" href="{{ url_for('web.edit_product_form', product_id=product.id) }}">Edit</a>
+              {% if product.is_active %}
+                <form action="{{ url_for('web.archive_product_form', product_id=product.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button danger compact">Archive</button></form>
+              {% else %}
+                <form action="{{ url_for('web.restore_product_form', product_id=product.id) }}" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button secondary compact">Restore</button></form>
+              {% endif %}
+            </div>
+            {% else %}<span class="muted">View only</span>{% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="{{ 8 if current_user.role in ['admin', 'manager'] else 7 }}" class="empty-row">No products yet. Add one from Manage inventory or <code>POST /api/products</code>.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "_pagination.html" %}
+</section>
+{% endblock %}

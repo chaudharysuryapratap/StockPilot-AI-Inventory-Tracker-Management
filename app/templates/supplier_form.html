@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}Edit supplier · StockPilot AI{% endblock %}
+{% block heading %}Edit {{ supplier.name }}{% endblock %}
+
+{% block content %}
+<section class="panel form-panel narrow-panel">
+  <form method="post" class="data-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Supplier name<input name="name" value="{{ supplier.name }}" required maxlength="255"></label>
+    <div class="form-row"><label>Contact email<input type="email" name="contact_email" value="{{ supplier.contact_email or '' }}" maxlength="255"></label><label>Contact phone<input name="contact_phone" value="{{ supplier.contact_phone or '' }}" maxlength="50"></label></div>
+    <div class="form-row"><label>Lead time (days)<input type="number" name="lead_time_days" min="0" max="3650" value="{{ supplier.lead_time_days }}" required></label><label>Payment terms<input name="payment_terms" value="{{ supplier.payment_terms or '' }}" maxlength="100"></label></div>
+    <label class="checkbox-label"><input type="checkbox" name="is_active" value="true" {% if supplier.is_active %}checked{% endif %}> Active supplier</label>
+    <div class="inline-actions"><button class="button primary">Save supplier</button><a class="button secondary" href="{{ url_for('web.suppliers_page', include_inactive=1) }}">Cancel</a></div>
+  </form>
+</section>
+{% endblock %}

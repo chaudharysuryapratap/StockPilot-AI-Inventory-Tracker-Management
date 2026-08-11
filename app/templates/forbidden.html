@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block title %}Permission required · StockPilot AI{% endblock %}
+{% block heading %}This action is restricted{% endblock %}
+
+{% block content %}
+<section class="panel form-panel edit-card">
+  <p class="eyebrow">ROLE PERMISSION</p>
+  <h2>Your {{ role_labels.get(current_user.role, current_user.role)|title }} account cannot perform this action.</h2>
+  <p class="subhead">{{ message }}. Ask a StockPilot administrator if your responsibilities have changed.</p>
+  <a class="button primary" href="{{ url_for('web.dashboard') }}">Return to overview</a>
+</section>
+{% endblock %}

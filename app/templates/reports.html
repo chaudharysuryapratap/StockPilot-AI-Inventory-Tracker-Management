@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Reports & alerts · StockPilot AI{% endblock %}
+{% block heading %}Reports and critical alerts{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div><p class="subhead">Download point-in-time inventory risk and current-cost valuation reports. Critical email attempts are recorded for audit.</p></div>
+  {% if current_user.role in ['admin', 'manager'] %}<form action="{{ url_for('web.send_critical_alert_form') }}" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="button primary">Analyze and send critical alert</button>
+  </form>{% else %}<span class="role-tag viewer">Viewer · export only</span>{% endif %}
+</section>
+
+<section class="metric-grid">
+  <article class="metric-card"><span>Critical positions</span><strong>{{ risk_report.summary.critical }}</strong><small>Stockout now or within the configured window</small></article>
+  <article class="metric-card"><span>Watch positions</span><strong>{{ risk_report.summary.watch }}</strong><small>Reorder or threshold review required</small></article>
+  <article class="metric-card"><span>On-hand value</span><strong>{{ valuation_report.summary.currency }} {{ '%.2f'|format(valuation_report.summary.on_hand_value) }}</strong><small>Current unit cost, not FIFO/LIFO</small></article>
+  <article class="metric-card"><span>Available value</span><strong>{{ valuation_report.summary.currency }} {{ '%.2f'|format(valuation_report.summary.available_value) }}</strong><small>After open-order reservations</small></article>
+</section>
+
+<section class="manage-grid">
+  <article class="panel form-panel">
+    <p class="eyebrow">RISK & REORDER</p><h2>Inventory risk report</h2>
+    <p class="form-help">Uses live available stock and the latest explainable forecast per SKU/location.</p>
+    <div class="inline-actions"><a class="button primary" href="{{ url_for('web.download_report', report_type='risk', file_format='xlsx') }}">Download Excel</a><a class="button secondary" href="{{ url_for('web.download_report', report_type='risk', file_format='pdf') }}">Download PDF</a></div>
+  </article>
+  <article class="panel form-panel">
+    <p class="eyebrow">VALUATION</p><h2>Inventory valuation report</h2>
+    <p class="form-help">Values each stock position using the product's current unit cost and labels the methodology explicitly.</p>
+    <div class="inline-actions"><a class="button primary" href="{{ url_for('web.download_report', report_type='valuation', file_format='xlsx') }}">Download Excel</a><a class="button secondary" href="{{ url_for('web.download_report', report_type='valuation', file_format='pdf') }}">Download PDF</a></div>
+  </article>
+
+  <article class="panel wide">
+    <div class="section-heading"><div><p class="eyebrow">DELIVERY AUDIT</p><h2>Recent alert attempts</h2></div><span class="status-chip"><i></i>{{ 'SES enabled' if ses_enabled else 'SES disabled' }}</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>Status</th><th>Items</th><th>Recipients</th><th>Result</th></tr></thead>
+        <tbody>
+          {% for delivery in deliveries %}
+            <tr><td>{{ delivery.created_at.strftime('%d %b %Y %H:%M') }}</td><td>{{ delivery.report_type|replace('_', ' ')|title }}</td><td><span class="risk-pill {{ 'healthy' if delivery.status == 'sent' else 'watch' if delivery.status == 'skipped' else 'critical' }}">{{ delivery.status|title }}</span></td><td>{{ delivery.item_count }}</td><td>{{ delivery.recipient_count }}</td><td>{{ delivery.detail }}</td></tr>
+          {% else %}
+            <tr><td colspan="6">No alert delivery attempts have been recorded.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+</section>
+{% endblock %}

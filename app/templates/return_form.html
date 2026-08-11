@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Create return · StockPilot AI{% endblock %}
+{% block heading %}Create return request{% endblock %}
+
+{% block content %}
+<section class="hero-row">
+  <div><p class="subhead">For shipped order {{ order.customer_reference or order.order_uid[:8] }} from {{ order.location.name }}.</p></div>
+  <a class="button secondary" href="{{ url_for('web.order_detail_page', order_id=order.id) }}">Back to order</a>
+</section>
+
+<section class="panel form-panel return-create-card">
+  <p class="eyebrow">RMA REQUEST</p>
+  <h2>Select only the quantities physically expected back</h2>
+  <p class="form-help">Requested quantities reserve the order's remaining return allowance and require Admin/Manager authorization before receiving.</p>
+  <form method="post" class="data-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="external_return_id" value="{{ return_request_id }}">
+    <div class="form-row">
+      <label>Reason code
+        <select name="reason_code" required>
+          {% for code, label in reason_labels.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Customer / service note
+        <input name="customer_note" maxlength="500" placeholder="Optional context or ticket reference">
+      </label>
+    </div>
+    <div class="return-item-selector">
+      {% for item in order.items %}
+        <label class="return-select-row">
+          <span><strong>{{ item.product.name }}</strong><small>{{ item.product.sku }} · shipped {{ item.quantity }} {{ item.product.unit_of_measure }} · {{ returnable[item.id] }} still returnable</small></span>
+          <input type="hidden" name="sku" value="{{ item.product.sku }}">
+          <input name="quantity" type="number" min="0.01" max="{{ returnable[item.id] }}" step="0.01" placeholder="0" {% if returnable[item.id] <= 0 %}readonly{% endif %} aria-label="Return quantity for {{ item.product.sku }}">
+        </label>
+      {% endfor %}
+    </div>
+    <button class="button primary" type="submit">Submit RMA request</button>
+  </form>
+</section>
+{% endblock %}

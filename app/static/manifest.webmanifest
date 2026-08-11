@@ -1,0 +1,18 @@
+{
+  "name": "StockPilot Mobile Picker",
+  "short_name": "StockPilot",
+  "description": "Touch-first warehouse picking for StockPilot inventory operations.",
+  "start_url": "/picker",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#EEF1F0",
+  "theme_color": "#1F2623",
+  "icons": [
+    {
+      "src": "/static/stockpilot-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

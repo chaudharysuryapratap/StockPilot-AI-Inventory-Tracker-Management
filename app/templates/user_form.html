@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}Edit business access · StockPilot{% endblock %}
+{% block heading %}Edit {{ user.name }}{% endblock %}
+
+{% block content %}
+<section class="panel form-panel edit-card">
+  <p class="eyebrow">{{ current_workspace.name|upper }} ACCESS</p><h2>Update account and business role</h2>
+  <p class="form-help">Role and access state affect this business. Name, email, and password belong to the person's StockPilot account.</p>
+  <form method="post" class="data-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-row"><label>Name<input name="name" value="{{ user.name }}" maxlength="255" required></label><label>Email<input type="email" name="email" value="{{ user.email }}" maxlength="255" required></label></div>
+    <div class="form-row"><label>Role<select name="role" required>{% for value, label in roles.items() %}<option value="{{ value }}" {% if membership.role == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label><label>New password<input type="password" name="password" minlength="10" maxlength="128" autocomplete="new-password" placeholder="Leave blank to keep current"></label></div>
+    <label class="checkbox-label"><input type="checkbox" name="is_active" value="true" {% if membership.is_active %}checked{% endif %}> Active in this business</label>
+    <div class="inline-actions"><button class="button primary" type="submit">Save access</button><a class="button secondary" href="{{ url_for('web.users_page') }}">Cancel</a></div>
+  </form>
+</section>
+{% endblock %}

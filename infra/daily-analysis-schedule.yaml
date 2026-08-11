@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Invokes the inventory analysis command on an SSM-managed EC2 instance every day.
+  EventBridge Scheduler is the modern successor to CloudWatch Events scheduled rules.
+
+Parameters:
+  TargetInstanceId:
+    Type: String
+    Description: EC2 instance ID running the inventory application and SSM Agent.
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 7 * * ? *)
+    Description: EventBridge Scheduler cron expression. Default is 7:00 AM in the selected timezone.
+  ScheduleTimezone:
+    Type: String
+    Default: Asia/Kolkata
+    Description: IANA timezone used by EventBridge Scheduler.
+
+Resources:
+  DailyAnalysisInvokerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub inventory-daily-analysis-invoker-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RunDailyAnalysisOnTaggedInstance
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${TargetInstanceId}
+
+  DailyAnalysisInvoker:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub inventory-daily-analysis-invoker-${AWS::StackName}
+      Description: Starts the Flask inventory analysis command through AWS Systems Manager.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt DailyAnalysisInvokerRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          TARGET_INSTANCE_ID: !Ref TargetInstanceId
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          def handler(event, context):
+              response = boto3.client("ssm").send_command(
+                  InstanceIds=[os.environ["TARGET_INSTANCE_ID"]],
+                  DocumentName="AWS-RunShellScript",
+                  Comment="Run StockPilot AI daily inventory analysis",
+                  Parameters={
+                      "commands": [
+                          "/usr/local/bin/run-inventory-analysis"
+                      ]
+                  }
+              )
+              return {
+                  "statusCode": 202,
+                  "body": json.dumps({"command_id": response["Command"]["CommandId"]})
+              }
+
+  SchedulerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub inventory-scheduler-${AWS::StackName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeDailyAnalysisLambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt DailyAnalysisInvoker.Arn
+
+  DailyAnalysisSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Run demand analysis and the SES critical-inventory alert each morning.
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      Name: !Sub inventory-daily-analysis-${AWS::StackName}
+      ScheduleExpression: !Ref ScheduleExpression
+      ScheduleExpressionTimezone: !Ref ScheduleTimezone
+      State: ENABLED
+      Target:
+        Arn: !GetAtt DailyAnalysisInvoker.Arn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"source":"eventbridge-scheduler","job":"daily-inventory-analysis"}'
+
+  AllowSchedulerToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DailyAnalysisInvoker
+      Principal: scheduler.amazonaws.com
+      SourceArn: !GetAtt DailyAnalysisSchedule.Arn
+
+Outputs:
+  DailyAnalysisScheduleArn:
+    Description: ARN of the daily EventBridge Scheduler schedule.
+    Value: !GetAtt DailyAnalysisSchedule.Arn
+  DailyAnalysisInvokerFunction:
+    Description: Lambda that asks SSM to run the EC2 analysis command.
+    Value: !Ref DailyAnalysisInvoker

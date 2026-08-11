@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_FILE="/etc/ai-inventory-tracker.env"
+APP_DIR="/opt/ai-inventory-tracker"
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "Missing $ENV_FILE" >&2
+  exit 1
+fi
+
+set -a
+source "$ENV_FILE"
+set +a
+
+cd "$APP_DIR"
+exec "$APP_DIR/.venv/bin/flask" --app run analyze-inventory --send-email --critical-only

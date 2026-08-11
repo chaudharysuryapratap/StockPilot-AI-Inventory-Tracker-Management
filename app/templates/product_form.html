@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}Edit {{ product.name }} · StockPilot AI{% endblock %}
+{% block heading %}Edit product{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div><p class="subhead">Update catalogue details without changing sales, stock, or audit history.</p></div>
+  <a class="button secondary" href="{{ url_for('web.products_page', include_archived=1) }}">Back to products</a>
+</section>
+
+<section class="panel form-panel">
+  <p class="eyebrow">{{ product.sku }}</p>
+  <h2>Product details</h2>
+  <form method="post" class="data-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="form-row triple">
+      <label>SKU<input name="sku" required maxlength="100" pattern="[A-Za-z0-9][A-Za-z0-9._/-]*" value="{{ product.sku }}"></label>
+      <label>Product name<input name="name" required maxlength="255" value="{{ product.name }}"></label>
+      <label>Barcode<input name="barcode" maxlength="100" value="{{ product.barcode or '' }}"></label>
+    </div>
+    <div class="form-row triple">
+      <label>Category<input name="category" required maxlength="100" value="{{ product.category }}"></label>
+      <label>Unit of measure<input name="unit_of_measure" required maxlength="20" value="{{ product.unit_of_measure }}"></label>
+      <label class="checkbox-label"><input type="checkbox" name="is_perishable" value="true" {% if product.is_perishable %}checked{% endif %}> Perishable product</label>
+    </div>
+    <div class="form-row triple">
+      <label>Cost price<input type="number" name="cost_price" min="0" max="99999999.99" step="0.01" value="{{ product.cost_price }}" required></label>
+      <label>Sell price<input type="number" name="sell_price" min="0" max="99999999.99" step="0.01" value="{{ product.sell_price }}" required></label>
+      <label>Reorder point<input type="number" name="reorder_point" min="0" step="1" value="{{ product.reorder_point }}" required></label>
+    </div>
+    <div class="form-row">
+      <label>Safety stock<input type="number" name="safety_stock" min="0" step="1" value="{{ product.safety_stock }}" required></label>
+      <label>Preferred supplier<select name="preferred_supplier_id"><option value="">No preferred supplier</option>{% for supplier in suppliers %}<option value="{{ supplier.id }}" {% if supplier.id == product.preferred_supplier_id %}selected{% endif %}>{{ supplier.name }} · {{ supplier.lead_time_days }} days</option>{% endfor %}</select></label>
+    </div>
+    <button class="button primary">Save product</button>
+  </form>
+</section>
+{% endblock %}

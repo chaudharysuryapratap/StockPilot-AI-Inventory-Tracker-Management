@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Mobile picker · StockPilot AI{% endblock %}
+{% block heading %}Picker workspace{% endblock %}
+
+{% block content %}
+<section class="picker-hero">
+  <div>
+    <p class="subhead">A touch-first queue with exact warehouse and bin positions.</p>
+    <p class="picker-safety">Stock actions require a live connection. The offline screen is intentionally read-only.</p>
+  </div>
+  <div class="picker-tools">
+    <span id="network-status" class="network-status" role="status">Checking connection…</span>
+    <a class="button secondary" href="{{ url_for('web.scanner_page') }}">Open barcode scanner</a>
+  </div>
+</section>
+
+<section class="picker-queue" aria-label="Active pick queue">
+  {% for order in orders %}
+    <article class="picker-order-card">
+      <header>
+        <div>
+          <p class="eyebrow">{{ order.location.code }} · {{ order.channel|upper }}</p>
+          <h2>{{ order.customer_reference or 'Order ' ~ order.order_uid[:8] }}</h2>
+          <small>{{ order.items|length }} line{% if order.items|length != 1 %}s{% endif %} · created {{ order.created_at.strftime('%d %b, %H:%M') }}</small>
+        </div>
+        <span class="order-status {{ order.status }}">{{ order.status }}</span>
+      </header>
+
+      <div class="picker-lines">
+        {% for item in order.items %}
+          <article class="picker-line {% if item.picked_at %}picked{% endif %}">
+            <div class="picker-item-heading">
+              <span class="picker-sequence">{{ loop.index }}</span>
+              <div><strong>{{ item.product.name }}</strong><small>{{ item.product.sku }} · {{ item.product.category }}</small></div>
+              <b>{{ item.quantity }} {{ item.product.unit_of_measure }}</b>
+            </div>
+            <div class="picker-bin-list">
+              {% for allocation in item.allocations %}
+                <span><b>{{ allocation.stock_level.location.code }}/{{ allocation.stock_level.bin.code if allocation.stock_level.bin else 'UNASSIGNED' }}</b><small>Pick {{ allocation.quantity_reserved }}</small></span>
+              {% endfor %}
+            </div>
+            {% if item.picked_at %}
+              <span class="picker-complete">✓ Picked by {{ item.picked_by.name }}</span>
+            {% elif order.status == 'picking' %}
+              <form method="post" action="{{ url_for('web.confirm_order_item_pick_form', order_id=order.id, item_id=item.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="return_to" value="picker">
+                <button class="button primary picker-action" type="submit">Confirm this line picked</button>
+              </form>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+
+      <footer class="picker-order-actions">
+        {% if order.status == 'pending' %}
+          <form method="post" action="{{ url_for('web.start_order_picking_form', order_id=order.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="return_to" value="picker">
+            <button class="button primary picker-action" type="submit">Start picking</button>
+          </form>
+        {% elif order.status == 'picking' %}
+          <form method="post" action="{{ url_for('web.pack_order_form', order_id=order.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="return_to" value="picker">
+            <button class="button primary picker-action" type="submit">Confirm all packed</button>
+          </form>
+        {% else %}
+          <span class="picker-ready">Packed and waiting for Manager/Admin shipment confirmation.</span>
+        {% endif %}
+        <a class="text-link" href="{{ url_for('web.order_detail_page', order_id=order.id) }}">Full order detail →</a>
+      </footer>
+    </article>
+  {% else %}
+    <article class="panel empty-state"><span>✓</span><h3>Pick queue is clear</h3><p>No pending, picking, or packed orders need attention.</p></article>
+  {% endfor %}
+</section>
+{% endblock %}
+
+{% block scripts %}<script src="{{ url_for('static', filename='picker.js') }}" defer></script>{% endblock %}

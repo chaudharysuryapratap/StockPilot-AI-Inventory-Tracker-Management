@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}RMA {{ rma.rma_uid[:8] }} · StockPilot AI{% endblock %}
+{% block heading %}RMA {{ rma.rma_uid[:8] }}{% endblock %}
+
+{% block content %}
+<section class="hero-row return-detail-hero">
+  <div><p class="subhead">Order {{ rma.sales_order.customer_reference or rma.sales_order.order_uid[:8] }} · {{ serialized.reason_label }} · created by {{ rma.created_by.name }}</p></div>
+  <div class="inline-actions"><span class="return-status {{ rma.status }}">{{ rma.status }}</span><a class="button secondary" href="{{ url_for('web.returns_page') }}">Back to returns</a></div>
+</section>
+
+{% if current_user.role in ['admin', 'manager'] and rma.status == 'requested' %}
+<section class="panel return-review-panel">
+  <div><p class="eyebrow">REVIEW REQUIRED</p><h2>Approve this request before physical receiving</h2></div>
+  <div class="inline-actions">
+    <form method="post" action="{{ url_for('web.authorize_return_form', return_id=rma.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button primary" type="submit">Authorize return</button></form>
+    <form method="post" action="{{ url_for('web.reject_return_form', return_id=rma.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button danger" type="submit">Reject</button></form>
+    <form method="post" action="{{ url_for('web.cancel_return_form', return_id=rma.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button secondary" type="submit">Cancel request</button></form>
+  </div>
+</section>
+{% elif current_user.role in ['admin', 'manager'] and rma.status == 'authorized' %}
+<div class="return-cancel-row"><form method="post" action="{{ url_for('web.cancel_return_form', return_id=rma.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="button secondary compact" type="submit">Cancel before receiving</button></form></div>
+{% endif %}
+
+<section class="return-item-grid">
+  {% for item in rma.items %}
+    {% set remaining = item.quantity_authorized - item.quantity_received %}
+    <article class="panel return-item-card">
+      <header><div><p class="eyebrow">{{ item.sales_order_item.product.sku }}</p><h2>{{ item.sales_order_item.product.name }}</h2></div><span class="mini-badge">{{ item.quantity_received }}/{{ item.quantity_authorized }} received</span></header>
+      <dl class="return-quantities">
+        <div><dt>Requested</dt><dd>{{ item.quantity_requested }}</dd></div>
+        <div><dt>Authorized</dt><dd>{{ item.quantity_authorized }}</dd></div>
+        <div><dt>Restocked</dt><dd>{{ item.quantity_restocked }}</dd></div>
+        <div><dt>Remaining</dt><dd>{{ remaining }}</dd></div>
+      </dl>
+
+      {% if rma.status in ['authorized', 'receiving'] and remaining > 0 %}
+        <form method="post" action="{{ url_for('web.receive_return_item_form', return_id=rma.id, item_id=item.id) }}" class="data-form return-receipt-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="external_receipt_id" value="{{ receipt_request_ids[item.id] }}">
+          <div class="form-row">
+            <label>Quantity received<input name="quantity" type="number" min="0.01" max="{{ remaining }}" step="0.01" required></label>
+            <label>Disposition<select name="disposition" required>{% for code, label in disposition_labels.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}</select></label>
+          </div>
+          <div class="form-row">
+            <label>Receiving location<select name="location_code" required><option value="">Select location</option>{% for location in locations %}<option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label>
+            <label>Bin code<input name="bin_code" maxlength="50" placeholder="Optional, e.g. A-01"></label>
+          </div>
+          <label>Inspection note<input name="note" maxlength="255" placeholder="Condition, packaging, or damage details"></label>
+          <button class="button primary" type="submit">Record physical receipt</button>
+        </form>
+      {% endif %}
+
+      {% if item.receipts %}
+        <div class="receipt-history">
+          {% for receipt in item.receipts %}
+            <div><span class="return-disposition {{ receipt.disposition }}">{{ receipt.disposition }}</span><strong>{{ receipt.quantity }} at {{ receipt.location.code }}{% if receipt.bin %}/{{ receipt.bin.code }}{% endif %}</strong><small>{{ receipt.received_by.name }} · {{ receipt.created_at.strftime('%d %b · %H:%M') }}</small></div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </article>
+  {% endfor %}
+</section>
+
+<section class="panel return-audit-panel">
+  <div class="panel-header"><div><p class="eyebrow">APPEND-ONLY HISTORY</p><h2>RMA audit trail</h2></div><span class="mini-badge">{{ rma.events|length }} events</span></div>
+  <ol class="return-timeline">
+    {% for event in rma.events %}
+      <li><span></span><div><strong>{{ event.event_type|replace('_', ' ')|title }}</strong><small>{{ event.user.name }} · {{ event.created_at.strftime('%d %b %Y · %H:%M') }}</small>{% if event.detail %}<code>{{ event.detail|tojson }}</code>{% endif %}</div></li>
+    {% endfor %}
+  </ol>
+</section>
+{% if rma.customer_note %}<p class="order-note"><strong>Customer/service note:</strong> {{ rma.customer_note }}</p>{% endif %}
+{% endblock %}

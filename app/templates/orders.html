@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+
+{% block title %}Sales orders · StockPilot AI{% endblock %}
+{% block heading %}Outbound orders{% endblock %}
+
+{% block content %}
+<div class="hero-row orders-hero">
+  <div>
+    <p class="subhead">Reserve available stock, generate bin-aware pick lists, pack, and ship without double deductions.</p>
+  </div>
+</div>
+
+<form class="table-filters panel" method="get">
+  <label class="filter-search"><span>⌕</span><input type="search" name="q" value="{{ q }}" placeholder="Search order or customer reference"></label>
+  <select name="status" aria-label="Order status"><option value="">All statuses</option>{% for value in ['pending','picking','packed','shipped','cancelled'] %}<option value="{{ value }}" {% if status_filter == value %}selected{% endif %}>{{ value|title }}</option>{% endfor %}</select>
+  <select name="limit" aria-label="Rows per page">{% for amount in [10,25,50,100] %}<option value="{{ amount }}" {% if pagination.limit == amount %}selected{% endif %}>{{ amount }} per page</option>{% endfor %}</select>
+  <button class="button secondary compact">Filter</button>
+  {% if q or status_filter %}<a class="text-link" href="{{ url_for('web.orders_page') }}">Clear</a>{% endif %}
+</form>
+
+<section class="content-grid order-layout {% if current_user.role in ['picker', 'viewer'] %}order-list-only{% endif %}">
+  {% if current_user.role in ['admin', 'manager'] %}
+    <article class="panel form-panel order-create-panel">
+      <p class="eyebrow">MANUAL ORDER</p>
+      <h2>Create sales order</h2>
+      <p class="form-help">Stock is reserved immediately but remains on hand until shipment is confirmed.</p>
+      <form action="{{ url_for('web.create_order_form') }}" method="post" class="data-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="external_order_id" value="{{ order_request_id }}">
+        <input type="hidden" name="channel" value="manual">
+        <label>Fulfilment location
+          <select name="location_code" required>
+            <option value="">Select location</option>
+            {% for location in locations %}
+              <option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Customer / order reference
+          <input name="customer_reference" maxlength="128" placeholder="e.g. WEB-1042">
+        </label>
+        <fieldset class="order-lines">
+          <legend>Order lines</legend>
+          {% for row in range(6) %}
+            <div class="order-line">
+              <label>Product
+                <select name="sku" {% if row == 0 %}required{% endif %}>
+                  <option value="">Select product</option>
+                  {% for product in products %}
+                    <option value="{{ product.sku }}">{{ product.name }} ({{ product.sku }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Quantity
+                <input type="number" name="quantity" min="0.01" step="0.01" {% if row == 0 %}required{% endif %}>
+              </label>
+            </div>
+          {% endfor %}
+        </fieldset>
+        <label>Internal note
+          <input name="note" maxlength="255" placeholder="Optional fulfilment note">
+        </label>
+        <button class="button primary" type="submit">Create and reserve stock</button>
+      </form>
+    </article>
+  {% endif %}
+
+  <article class="panel table-panel order-history">
+    <div class="panel-header">
+      <div><p class="eyebrow">OUTBOUND QUEUE</p><h2>Recent sales orders</h2></div>
+      <span class="mini-badge">{{ pagination.total }} total</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Order</th><th>Location</th><th>Lines</th><th>Status</th><th>Created by</th><th></th></tr></thead>
+        <tbody>
+          {% for order in orders %}
+            <tr>
+              <td><strong>{{ order.customer_reference or order.order_uid[:8] }}</strong><small>{{ order.created_at.strftime('%d %b %Y %H:%M') }} · {{ order.channel }}</small></td>
+              <td><span class="location-tag">{{ order.location.code }}</span></td>
+              <td>{{ order.items|length }}</td>
+              <td><span class="order-status {{ order.status }}">{{ order.status|replace('_', ' ') }}</span></td>
+              <td>{{ order.created_by.name }}</td>
+              <td><a class="button secondary compact" href="{{ url_for('web.order_detail_page', order_id=order.id) }}">Open</a></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="empty-row">No sales orders yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% include "_pagination.html" %}
+  </article>
+</section>
+{% endblock %}

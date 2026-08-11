@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Stock corrections · StockPilot{% endblock %}
+{% block heading %}Stock corrections{% endblock %}
+
+{% block content %}
+<section class="hero-row products-hero">
+  <div>
+    <p class="eyebrow">INVENTORY CONTROL</p>
+    <h2>Correct the ledger without bypassing purchasing</h2>
+    <p class="subhead">Use this page for physical counts, write-offs, waste, and exceptional corrections. Normal supplier deliveries should be received against a purchase order.</p>
+  </div>
+  <div class="inline-actions">
+    <a class="button primary" href="{{ url_for('web.purchase_orders_page', _anchor='catalogue-step') }}">Add inventory</a>
+    <a class="button secondary" href="{{ url_for('web.suppliers_page') }}">Suppliers</a>
+    <a class="button secondary" href="{{ url_for('web.locations_page') }}">Warehouses & bins</a>
+  </div>
+</section>
+
+<section class="permission-note" role="note">
+  <span>⇣</span>
+  <p><strong>Receiving a supplier delivery?</strong><small>Create or open its purchase order so supplier, warehouse, quantities, units, lots, and expiry dates remain connected.</small></p>
+  <a class="button secondary compact" href="{{ url_for('web.purchase_orders_page', _anchor='order-step') }}">Open purchasing</a>
+</section>
+
+<section class="manage-grid correction-layout">
+  <article class="panel form-panel wide">
+    <div class="panel-header"><div><p class="eyebrow">AUDITED ADJUSTMENT</p><h2>Record a stock correction</h2><p class="panel-note">A movement is written to the audit ledger for every correction.</p></div></div>
+    <form action="{{ url_for('web.adjust_stock_form') }}" method="post" class="data-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="form-row">
+        <label>Product<select name="sku" required><option value="">Select a product</option>{% for product in products %}<option value="{{ product.sku }}">{{ product.name }} ({{ product.sku }})</option>{% endfor %}</select></label>
+        <label>Warehouse<select name="location_code" required><option value="">Select a warehouse</option>{% for location in locations %}<option value="{{ location.code }}">{{ location.name }} ({{ location.code }})</option>{% endfor %}</select></label>
+      </div>
+      <div class="form-row">
+        <label>Bin (optional)<select name="bin_code"><option value="">Warehouse level / no bin</option>{% for bin in bins %}<option value="{{ bin.code }}">{{ bin.location.code }} / {{ bin.code }}</option>{% endfor %}</select></label>
+        <label>Quantity change<input type="number" name="quantity_delta" step="0.01" required placeholder="For example 25 or -3"></label>
+      </div>
+      <div class="form-row">
+        <label>Reason<select name="reason"><option value="manual_count">Physical count correction</option><option value="waste">Waste / write-off</option><option value="return">Exceptional return correction</option><option value="stock_received">Legacy receipt correction</option></select></label>
+        <label>Reference or note<input name="note" maxlength="255" placeholder="Count sheet, incident, or approval reference"></label>
+      </div>
+      <button class="button primary" type="submit">Save audited correction</button>
+    </form>
+  </article>
+  <aside class="panel form-panel correction-guidance">
+    <p class="eyebrow">WHEN TO USE THIS</p>
+    <h3>Corrections are exceptions</h3>
+    <ul class="plain-check-list">
+      <li><span>✓</span> Physical count differs from StockPilot</li>
+      <li><span>✓</span> Damaged or expired stock is written off</li>
+      <li><span>✓</span> A historic balance needs an audited correction</li>
+    </ul>
+    <p class="form-help">Do not use a correction for a normal supplier delivery. Purchasing records ordered versus received quantities and preserves lot traceability.</p>
+  </aside>
+</section>
+{% endblock %}
