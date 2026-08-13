@@ -13,7 +13,6 @@ Parameters:
     AllowedValues:
       - t4g.micro
       - t4g.small
-      - t3a.micro
       - t3.micro
   RepositoryUrl:
     Type: String
@@ -139,6 +138,11 @@ Resources:
       ImageId: !Ref AmiId
       InstanceType: !Ref InstanceType
       IamInstanceProfile: !Ref InstanceProfile
+      CreditSpecification:
+        CPUCredits: standard
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
       SecurityGroupIds:
         - !Ref WebSecurityGroup
       BlockDeviceMappings:

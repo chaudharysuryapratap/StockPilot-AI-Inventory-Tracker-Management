@@ -127,7 +127,7 @@ SQL
     echo 'REPORT_CURRENCY=INR'
     echo 'AWS_REGION=ap-south-1'
     echo 'BEDROCK_ENABLED=true'
-    echo 'BEDROCK_MODEL_ID=amazon.nova-micro-v1:0'
+    echo 'BEDROCK_MODEL_ID=apac.amazon.nova-micro-v1:0'
     echo 'SES_ENABLED=false'
     echo "BACKUP_S3_BUCKET=$BACKUP_BUCKET"
     echo 'GUNICORN_WORKERS=1'
