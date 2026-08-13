@@ -113,7 +113,7 @@ SQL
     echo 'ALLOW_ACTOR_HEADER=false'
     echo 'STAFF_USERNAME=surya-admin'
     echo "STAFF_PASSWORD=$initial_password"
-    echo 'DEFAULT_WORKSPACE_NAME=StockPilot Demo'
+    echo "DEFAULT_WORKSPACE_NAME='StockPilot Demo'"
     echo 'DEFAULT_BUSINESS_USERNAME=stockpilot'
     echo 'DEFAULT_STAFF_EMAIL=admin@stockpilotai.in'
     echo 'REQUIRE_EMAIL_VERIFICATION=false'
