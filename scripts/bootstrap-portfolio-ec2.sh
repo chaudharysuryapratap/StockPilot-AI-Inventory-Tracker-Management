@@ -47,7 +47,12 @@ apt-get install -y \
   unzip
 
 if ! apt-get install -y awscli; then
-  curl -fsSLo /tmp/awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip
+  case "$(uname -m)" in
+    aarch64|arm64) aws_cli_arch='aarch64' ;;
+    x86_64|amd64) aws_cli_arch='x86_64' ;;
+    *) echo "Unsupported AWS CLI architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  curl -fsSLo /tmp/awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-${aws_cli_arch}.zip"
   rm -rf /tmp/aws
   unzip -q /tmp/awscliv2.zip -d /tmp
   /tmp/aws/install --update
@@ -100,7 +105,7 @@ SQL
     echo 'AUTO_CREATE_SCHEMA=false'
     echo 'FLASK_APP=run.py'
     echo "SECRET_KEY=$secret_key"
-    echo "DATABASE_URL=mysql+pymysql://inventory_app:$db_password@127.0.0.1:3306/inventory_tracker"
+    echo "DATABASE_URL=mariadb+pymysql://inventory_app:$db_password@127.0.0.1:3306/inventory_tracker"
     echo "POS_WEBHOOK_TOKEN=$pos_token"
     echo "INTERNAL_API_TOKEN=$internal_token"
     echo 'STAFF_AUTH_ENABLED=true'
@@ -148,6 +153,14 @@ SQL
     echo 'Change this password and enable MFA immediately after first login.'
   } > /root/stockpilot-initial-login.txt
   chmod 600 /root/stockpilot-initial-login.txt
+
+  aws ssm put-parameter \
+    --region ap-south-1 \
+    --name /stockpilot/initial-login \
+    --description 'Temporary StockPilot portfolio administrator login; delete after first use.' \
+    --type SecureString \
+    --value "$(< /root/stockpilot-initial-login.txt)" \
+    --overwrite >/dev/null
 fi
 
 install -m 755 "$APP_DIR/scripts/run-inventory-analysis" /usr/local/bin/run-inventory-analysis

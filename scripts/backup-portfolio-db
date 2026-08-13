@@ -25,8 +25,6 @@ archive="$BACKUP_DIR/stockpilot-$timestamp.sql.gz"
 mariadb-dump \
   --defaults-extra-file="$BACKUP_CONFIG" \
   --single-transaction \
-  --routines \
-  --events \
   inventory_tracker | gzip -9 > "$archive"
 
 aws s3 cp \

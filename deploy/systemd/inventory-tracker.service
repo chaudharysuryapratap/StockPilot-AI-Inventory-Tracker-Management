@@ -1,6 +1,8 @@
 [Unit]
 Description=StockPilot AI inventory dashboard
-After=network.target
+Requires=mariadb.service
+Wants=network-online.target
+After=network-online.target mariadb.service
 
 [Service]
 Type=simple

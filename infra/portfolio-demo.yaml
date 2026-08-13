@@ -6,13 +6,15 @@ Parameters:
     Type: AWS::EC2::VPC::Id
   AmiId:
     Type: AWS::EC2::Image::Id
-    Description: Ubuntu 24.04 LTS ARM64 AMI.
+    Description: Ubuntu 24.04 LTS AMI matching the selected instance architecture.
   InstanceType:
     Type: String
     Default: t4g.micro
     AllowedValues:
       - t4g.micro
       - t4g.small
+      - t3a.micro
+      - t3.micro
   RepositoryUrl:
     Type: String
     Default: https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management.git
@@ -94,6 +96,11 @@ Resources:
                   - ses:SendEmail
                   - ses:SendRawEmail
                 Resource: '*'
+              - Sid: StoreInitialLogin
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/stockpilot/initial-login'
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
