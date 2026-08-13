@@ -4,8 +4,6 @@ Description: Low-cost, single-server StockPilot portfolio deployment in ap-south
 Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
-  SubnetId:
-    Type: AWS::EC2::Subnet::Id
   AmiId:
     Type: AWS::EC2::Image::Id
     Description: Ubuntu 24.04 LTS ARM64 AMI.
@@ -134,13 +132,8 @@ Resources:
       ImageId: !Ref AmiId
       InstanceType: !Ref InstanceType
       IamInstanceProfile: !Ref InstanceProfile
-      NetworkInterfaces:
-        - AssociatePublicIpAddress: true
-          DeleteOnTermination: true
-          DeviceIndex: '0'
-          GroupSet:
-            - !Ref WebSecurityGroup
-          SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
           Ebs:
