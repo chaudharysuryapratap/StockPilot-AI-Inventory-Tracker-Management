@@ -30,6 +30,13 @@ Thumbs.db
 # Logs
 *.log
 
+# Local application state and generated QA artifacts
+instance/
+outputs/
+*.db
+*.sqlite
+*.sqlite3
+
 # Temporary files
 tmp/
 temp/

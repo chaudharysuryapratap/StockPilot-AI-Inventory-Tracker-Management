@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Low-cost, single-server StockPilot portfolio deployment in ap-south-1.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Ubuntu 24.04 LTS ARM64 AMI.
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+    AllowedValues:
+      - t4g.micro
+      - t4g.small
+  RepositoryUrl:
+    Type: String
+    Default: https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management.git
+  RepositoryBranch:
+    Type: String
+    Default: main
+  DomainName:
+    Type: String
+    Default: stockpilotai.in
+  BackupBucketName:
+    Type: String
+
+Resources:
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BackupBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldDatabaseBackups
+            Status: Enabled
+            Prefix: database/
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: StockPilot
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: StockPilotRuntime
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DatabaseBackups
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                Resource: !Sub '${BackupBucket.Arn}/*'
+              - Sid: ListBackupBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt BackupBucket.Arn
+              - Sid: StockPilotAI
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+              - Sid: StockPilotEmail
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP and HTTPS for StockPilot; administration uses SSM.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP for certificate issuance and redirect
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS application traffic
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: stockpilot-portfolio-web
+        - Key: Project
+          Value: StockPilot
+
+  WebInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref InstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeleteOnTermination: true
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref WebSecurityGroup
+          SubnetId: !Ref SubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 20
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: stockpilot-portfolio
+        - Key: Project
+          Value: StockPilot
+      UserData:
+        Fn::Base64: !Sub |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git
+          rm -rf /opt/stockpilot-source
+          git clone --branch '${RepositoryBranch}' --single-branch '${RepositoryUrl}' /opt/stockpilot-source
+          bash /opt/stockpilot-source/scripts/bootstrap-portfolio-ec2.sh \
+            /opt/stockpilot-source \
+            '${DomainName}' \
+            '${BackupBucketName}'
+
+  PublicAddress:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: stockpilot-portfolio
+        - Key: Project
+          Value: StockPilot
+
+  AddressAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt PublicAddress.AllocationId
+      InstanceId: !Ref WebInstance
+
+  SystemStatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Recover the StockPilot instance after an AWS host-system failure.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref WebInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Sub 'arn:${AWS::Partition}:automate:${AWS::Region}:ec2:recover'
+
+Outputs:
+  InstanceId:
+    Value: !Ref WebInstance
+  PublicIp:
+    Value: !Ref PublicAddress
+  BackupBucket:
+    Value: !Ref BackupBucket
+  Domain:
+    Value: !Ref DomainName

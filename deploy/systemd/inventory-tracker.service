@@ -9,8 +9,10 @@ Group=inventory
 WorkingDirectory=/opt/ai-inventory-tracker
 EnvironmentFile=/etc/ai-inventory-tracker.env
 Environment=PYTHONUNBUFFERED=1
+Environment=GUNICORN_WORKERS=1
+Environment=GUNICORN_THREADS=2
 ExecStartPre=/opt/ai-inventory-tracker/.venv/bin/flask --app run migrate-schema
-ExecStart=/opt/ai-inventory-tracker/.venv/bin/gunicorn --workers 2 --threads 4 --bind 127.0.0.1:8000 --access-logfile - --error-logfile - run:app
+ExecStart=/opt/ai-inventory-tracker/.venv/bin/gunicorn --workers ${GUNICORN_WORKERS} --threads ${GUNICORN_THREADS} --bind 127.0.0.1:8000 --access-logfile - --error-logfile - run:app
 Restart=always
 RestartSec=5
 NoNewPrivileges=true

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ENV_FILE="/etc/ai-inventory-tracker.env"
+BACKUP_CONFIG="/etc/stockpilot-backup.cnf"
+BACKUP_DIR="/var/backups/stockpilot"
+
+if [[ ! -r "$ENV_FILE" || ! -r "$BACKUP_CONFIG" ]]; then
+  echo "StockPilot backup configuration is missing." >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+if [[ -z "${BACKUP_S3_BUCKET:-}" ]]; then
+  echo "BACKUP_S3_BUCKET is not configured." >&2
+  exit 1
+fi
+
+install -d -m 700 "$BACKUP_DIR"
+umask 077
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+archive="$BACKUP_DIR/stockpilot-$timestamp.sql.gz"
+
+mariadb-dump \
+  --defaults-extra-file="$BACKUP_CONFIG" \
+  --single-transaction \
+  --routines \
+  --events \
+  inventory_tracker | gzip -9 > "$archive"
+
+aws s3 cp \
+  "$archive" \
+  "s3://$BACKUP_S3_BUCKET/database/$(basename "$archive")" \
+  --only-show-errors
+
+find "$BACKUP_DIR" -type f -name 'stockpilot-*.sql.gz' -mtime +2 -delete
+echo "Uploaded encrypted StockPilot backup: $(basename "$archive")"
