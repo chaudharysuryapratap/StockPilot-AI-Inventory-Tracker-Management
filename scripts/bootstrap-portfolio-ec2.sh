@@ -183,8 +183,11 @@ if [[ ! -f /var/lib/stockpilot/demo-seeded ]]; then
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   set +a
-  "$APP_DIR/.venv/bin/flask" --app run migrate-schema
-  "$APP_DIR/.venv/bin/flask" --app run seed-demo
+  (
+    cd "$APP_DIR"
+    "$APP_DIR/.venv/bin/flask" --app run migrate-schema
+    "$APP_DIR/.venv/bin/flask" --app run seed-demo
+  )
   touch /var/lib/stockpilot/demo-seeded
 fi
 
