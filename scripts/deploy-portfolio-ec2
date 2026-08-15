@@ -23,6 +23,98 @@ if ! flock -n 9; then
   exit 1
 fi
 
+is_enabled() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+reconcile_public_signup_env() {
+  local temporary_env
+  temporary_env="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
+
+  if ! awk '
+    BEGIN {
+      allow_signup_written = 0
+      verification_written = 0
+    }
+    /^ALLOW_WEB_SIGNUP=/ {
+      if (!allow_signup_written) {
+        print "ALLOW_WEB_SIGNUP=true"
+        allow_signup_written = 1
+      }
+      next
+    }
+    /^REQUIRE_EMAIL_VERIFICATION=/ {
+      if (!verification_written) {
+        print "REQUIRE_EMAIL_VERIFICATION=true"
+        verification_written = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!allow_signup_written) {
+        print "ALLOW_WEB_SIGNUP=true"
+      }
+      if (!verification_written) {
+        print "REQUIRE_EMAIL_VERIFICATION=true"
+      }
+    }
+  ' "$ENV_FILE" > "$temporary_env"; then
+    rm -f -- "$temporary_env"
+    echo "Could not prepare the StockPilot environment update." >&2
+    exit 1
+  fi
+
+  if ! chown root:root "$temporary_env" \
+    || ! chmod 600 "$temporary_env" \
+    || ! mv -f -- "$temporary_env" "$ENV_FILE"; then
+    rm -f -- "$temporary_env"
+    echo "Could not install the StockPilot environment update." >&2
+    exit 1
+  fi
+}
+
+ENV_BACKUP=""
+
+cleanup_env_backup() {
+  if [[ -n "$ENV_BACKUP" ]]; then
+    rm -f -- "$ENV_BACKUP"
+  fi
+}
+
+restore_env_backup() {
+  local restore_env
+  restore_env="$(mktemp "${ENV_FILE}.restore.XXXXXX")"
+  if ! install -m 600 -o root -g root "$ENV_BACKUP" "$restore_env" \
+    || ! mv -f -- "$restore_env" "$ENV_FILE"; then
+    rm -f -- "$restore_env"
+    echo "Could not restore the previous StockPilot environment." >&2
+    return 1
+  fi
+}
+
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
+
+if ! is_enabled "${AUTH_EMAIL_ENABLED:-}" && ! is_enabled "${SES_ENABLED:-}"; then
+  echo "Public signup requires AUTH_EMAIL_ENABLED or SES_ENABLED in $ENV_FILE." >&2
+  exit 1
+fi
+if [[ -z "${SES_FROM_EMAIL:-}" ]]; then
+  echo "Public signup requires SES_FROM_EMAIL in $ENV_FILE." >&2
+  exit 1
+fi
+
+# Validate and migrate the release with the same settings that the service will use,
+# but do not persist them until the migration has completed successfully.
+export ALLOW_WEB_SIGNUP=true
+export REQUIRE_EMAIL_VERIFICATION=true
+
 cd "$SOURCE_DIR"
 if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   echo "The deployment checkout contains local tracked changes; refusing to overwrite them." >&2
@@ -59,10 +151,6 @@ chown -R root:"$APP_USER" "$APP_DIR"
 chown "$APP_USER:$APP_USER" "$APP_DIR/instance"
 chmod -R g-w,o-w "$APP_DIR"
 
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
 (
   cd "$APP_DIR"
   runuser -u "$APP_USER" --preserve-environment -- \
@@ -71,7 +159,19 @@ set +a
 
 systemctl daemon-reload
 nginx -t
-systemctl restart inventory-tracker
+
+ENV_BACKUP="$(mktemp "${ENV_FILE}.backup.XXXXXX")"
+install -m 600 -o root -g root "$ENV_FILE" "$ENV_BACKUP"
+trap cleanup_env_backup EXIT
+reconcile_public_signup_env
+
+if ! systemctl restart inventory-tracker; then
+  restore_env_backup || true
+  systemctl restart inventory-tracker || true
+  journalctl -u inventory-tracker --no-pager -n 100 >&2
+  echo "StockPilot restart failed; the previous environment was restored." >&2
+  exit 1
+fi
 
 healthy=false
 for _ in {1..30}; do
@@ -83,9 +183,14 @@ for _ in {1..30}; do
   sleep 2
 done
 if [[ "$healthy" != true ]]; then
+  restore_env_backup || true
+  systemctl restart inventory-tracker || true
   echo "StockPilot did not become healthy after deployment." >&2
   journalctl -u inventory-tracker --no-pager -n 100 >&2
   exit 1
 fi
 
+cleanup_env_backup
+ENV_BACKUP=""
+trap - EXIT
 echo "StockPilot deployment complete: ${current_revision} -> ${target_revision}."

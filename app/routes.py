@@ -79,10 +79,12 @@ from app.services.identity import (
     resolve_actor,
 )
 from app.services.saas_auth import (
+    AuthActionThrottle,
     AuthMailer,
     AuthTokenService,
     LoginThrottle,
     MFAService,
+    SignupThrottle,
     WorkspaceService,
     WorkspaceValidationError,
     oidc_secret,
@@ -358,7 +360,13 @@ def api_read_access(view):
     def wrapped(*args, **kwargs):
         if not current_app.config["STAFF_AUTH_ENABLED"]:
             return view(*args, **kwargs)
-        if _session_user() is not None:
+        actor = _session_user()
+        if actor is not None:
+            if (
+                current_app.config.get("REQUIRE_EMAIL_VERIFICATION")
+                and not actor.email_verified_at
+            ):
+                return jsonify({"error": "email verification required"}), 403
             return view(*args, **kwargs)
         provided = request.headers.get("X-Internal-Token", "")
         expected = current_app.config["INTERNAL_API_TOKEN"]
@@ -375,6 +383,13 @@ def session_api_access(view):
         actor = _session_user()
         if current_app.config["STAFF_AUTH_ENABLED"] and actor is None:
             return jsonify({"error": "authentication required"}), 401
+        if (
+            current_app.config["STAFF_AUTH_ENABLED"]
+            and current_app.config.get("REQUIRE_EMAIL_VERIFICATION")
+            and actor is not None
+            and not actor.email_verified_at
+        ):
+            return jsonify({"error": "email verification required"}), 403
         if current_app.config["STAFF_AUTH_ENABLED"] and request.method not in {"GET", "HEAD", "OPTIONS"}:
             _validate_csrf()
         g.current_user = actor or ensure_default_identity()
@@ -397,8 +412,10 @@ def require_staff_login():
         )
         return None
 
-    if authentication_setup_required():
+    setup_required = authentication_setup_required()
+    if setup_required:
         activate_legacy_credentials()
+        setup_required = authentication_setup_required()
 
     public_endpoints = {
         "web.login",
@@ -414,7 +431,7 @@ def require_staff_login():
     if request.endpoint in public_endpoints:
         return None
     if g.current_user is None:
-        if authentication_setup_required() and not current_app.config["ALLOW_WEB_SIGNUP"]:
+        if setup_required and not current_app.config["ALLOW_WEB_SIGNUP"]:
             abort(
                 503,
                 description=(
@@ -422,7 +439,15 @@ def require_staff_login():
                     "'flask --app run create-admin' on the server"
                 ),
             )
-        destination = "web.signup" if authentication_setup_required() else "web.login"
+        destination = (
+            "web.signup"
+            if setup_required
+            or (
+                request.endpoint == "web.dashboard"
+                and current_app.config["ALLOW_WEB_SIGNUP"]
+            )
+            else "web.login"
+        )
         return redirect(url_for(destination, next=request.path))
     if (
         current_app.config.get("REQUIRE_EMAIL_VERIFICATION")
@@ -453,7 +478,7 @@ def inject_csrf_token():
         "role_labels": ROLE_LABELS,
         "report_currency": current_app.config["REPORT_CURRENCY"],
         "allow_signup": current_app.config.get("ALLOW_WEB_SIGNUP", False),
-        "asset_version": current_app.config.get("ASSET_VERSION", "20260810.4"),
+        "asset_version": current_app.config.get("ASSET_VERSION", "20260815.1"),
         "current_workspace": getattr(g, "active_workspace", None),
         "current_membership": getattr(g, "active_membership", None),
         "workspace_memberships": (
@@ -816,6 +841,9 @@ def signup():
         abort(404)
     if request.method == "POST":
         _validate_csrf()
+        if SignupThrottle.is_limited(request.remote_addr):
+            abort(429, description="too many account-creation attempts; try again later")
+        SignupThrottle.record(request.remote_addr)
         try:
             payload = request.form.to_dict()
             if authentication_setup_required():
@@ -842,6 +870,12 @@ def signup():
             _complete_login(actor, workspace.id)
             if not sent and current_app.config.get("APP_ENV") != "production":
                 flash(f"Development verification link: {link}", "success")
+            elif not sent and current_app.config.get("REQUIRE_EMAIL_VERIFICATION"):
+                flash(
+                    "Your account was created, but the verification email could not be sent. "
+                    "Use Send a fresh link to try again.",
+                    "error",
+                )
             flash("Your business workspace and primary warehouse are ready.", "success")
             if current_app.config.get("REQUIRE_EMAIL_VERIFICATION"):
                 return redirect(url_for("web.verification_pending"))
@@ -867,9 +901,16 @@ def forgot_password():
     if request.method == "POST":
         _validate_csrf()
         email = str(request.form.get("email") or "").strip().lower()
+        if AuthActionThrottle.is_limited(
+            request.remote_addr, "password-reset", email
+        ):
+            abort(429, description="too many password-reset requests; try again later")
+        AuthActionThrottle.record(request.remote_addr, "password-reset", email)
         user = User.query.filter_by(email=email, is_active=True).first()
         if user:
-            raw, _ = AuthTokenService.password_reset(user)
+            raw, record = AuthTokenService.password_reset(
+                user, replace_existing=False
+            )
             link = url_for("web.reset_password", token=raw, _external=True)
             sent = _send_auth_link(
                 recipient=user.email,
@@ -877,8 +918,13 @@ def forgot_password():
                 link=link,
                 explanation="Use this single-use link to reset your StockPilot password.",
             )
-            if not sent and current_app.config.get("APP_ENV") != "production":
+            if sent:
+                AuthTokenService.activate_replacement(record)
+            elif current_app.config.get("APP_ENV") != "production":
+                AuthTokenService.activate_replacement(record)
                 flash(f"Development reset link: {link}", "success")
+            else:
+                AuthTokenService.discard(record)
         flash("If that account exists, a password-reset link has been sent.", "success")
         return redirect(url_for("web.login"))
     return render_template("forgot_password.html")
@@ -935,7 +981,15 @@ def verification_pending():
 @web_bp.post("/verification/resend")
 def resend_verification():
     actor = _current_actor()
-    raw, _ = AuthTokenService.verification(actor)
+    throttle_identifier = f"user:{actor.id}"
+    if AuthActionThrottle.is_limited(
+        request.remote_addr, "verification-resend", throttle_identifier
+    ):
+        abort(429, description="too many verification requests; try again later")
+    AuthActionThrottle.record(
+        request.remote_addr, "verification-resend", throttle_identifier
+    )
+    raw, record = AuthTokenService.verification(actor, replace_existing=False)
     link = url_for("web.verify_email", token=raw, _external=True)
     sent = _send_auth_link(
         recipient=actor.email,
@@ -943,9 +997,18 @@ def resend_verification():
         link=link,
         explanation="Verify your email to continue using StockPilot.",
     )
-    if not sent and current_app.config.get("APP_ENV") != "production":
+    if sent:
+        AuthTokenService.activate_replacement(record)
+        flash("A fresh verification link has been sent.", "success")
+    elif current_app.config.get("APP_ENV") != "production":
+        AuthTokenService.activate_replacement(record)
         flash(f"Development verification link: {link}", "success")
-    flash("A fresh verification link has been issued.", "success")
+    else:
+        AuthTokenService.discard(record)
+        flash(
+            "The verification email could not be sent. Please try again shortly.",
+            "error",
+        )
     return redirect(url_for("web.verification_pending"))
 
 
@@ -1163,9 +1226,17 @@ def invite_workspace_user():
                 f"{invitation.payload_json.get('role', 'picker').title()}."
             ),
         )
-        if not sent and current_app.config.get("APP_ENV") != "production":
+        if sent:
+            AuthTokenService.activate_replacement(invitation)
+        elif current_app.config.get("APP_ENV") != "production":
+            AuthTokenService.activate_replacement(invitation)
             flash(f"Development invitation link: {link}", "success")
-        flash(f"Invitation issued to {invitation.email}.", "success")
+        else:
+            AuthTokenService.discard(invitation)
+        if sent or current_app.config.get("APP_ENV") != "production":
+            flash(f"Invitation issued to {invitation.email}.", "success")
+        else:
+            flash("The invitation email could not be sent.", "error")
     except WorkspaceValidationError as error:
         flash(str(error), "error")
     return redirect(url_for("web.users_page"))

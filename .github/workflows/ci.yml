@@ -51,11 +51,13 @@ jobs:
           INSTANCE_ID: ${{ vars.STOCKPILOT_INSTANCE_ID }}
         run: |
           set -euo pipefail
+          # The installed deploy helper can be one release behind. Run the newly
+          # installed helper once more only when the paired signup flags remain stale.
           command_id="$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name AWS-RunShellScript \
             --comment "Deploy StockPilot ${GITHUB_SHA}" \
-            --parameters 'commands=["sudo /usr/local/sbin/deploy-stockpilot"]' \
+            --parameters 'commands=["set -e","sudo /usr/local/sbin/deploy-stockpilot","if ! sudo grep -qx ALLOW_WEB_SIGNUP=true /etc/ai-inventory-tracker.env || ! sudo grep -qx REQUIRE_EMAIL_VERIFICATION=true /etc/ai-inventory-tracker.env; then sudo /usr/local/sbin/deploy-stockpilot; fi"]' \
             --query 'Command.CommandId' \
             --output text)"
 

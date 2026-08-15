@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 
 import pytest
+from sqlalchemy import text
 
 from app import create_app, db
 from app.models import (
@@ -15,8 +16,16 @@ from app.models import (
     WorkspaceIntegration,
     WorkspaceMembership,
     WorkspaceSetting,
+    utcnow,
 )
-from app.services.saas_auth import AuthTokenService, MFAService, WorkspaceService
+from app.schema import SCHEMA_VERSIONS, SPRINT_11_SCHEMA_VERSION, migrate_schema
+from app.services.saas_auth import (
+    AuthMailer,
+    AuthTokenService,
+    LoginThrottle,
+    MFAService,
+    WorkspaceService,
+)
 
 
 @pytest.fixture
@@ -38,6 +47,10 @@ def saas_app(tmp_path):
             "DEFAULT_PAGE_SIZE": 10,
             "MAX_PAGE_SIZE": 50,
             "LOGIN_MAX_ATTEMPTS": 3,
+            "SIGNUP_MAX_ATTEMPTS": 3,
+            "SIGNUP_WINDOW_SECONDS": 3600,
+            "AUTH_LINK_MAX_ATTEMPTS": 2,
+            "AUTH_LINK_WINDOW_SECONDS": 900,
         }
     )
     yield app
@@ -138,6 +151,214 @@ def test_modern_signup_creates_unique_business_warehouse_and_membership(
         "valid": True,
         "available": False,
     }
+
+
+def test_public_signup_is_the_anonymous_home_after_initial_account_exists(
+    saas_client,
+):
+    _signup(saas_client)
+    _logout(saas_client)
+
+    home = saas_client.get("/")
+    assert home.status_code == 302
+    assert home.location == "/signup?next=/"
+
+    signup = saas_client.get(home.location)
+    assert signup.status_code == 200
+    assert b"Build your inventory command centre" in signup.data
+
+    login = saas_client.get("/login")
+    assert login.status_code == 200
+    assert b"Create account" in login.data
+    assert b'href="/signup"' in login.data
+
+    protected_page = saas_client.get("/warehouses")
+    assert protected_page.status_code == 302
+    assert protected_page.location == "/login?next=/warehouses"
+
+
+def test_invite_only_mode_keeps_anonymous_home_and_login_signup_closed(
+    saas_client, saas_app
+):
+    _signup(saas_client)
+    _logout(saas_client)
+    saas_app.config["ALLOW_WEB_SIGNUP"] = False
+
+    home = saas_client.get("/")
+    assert home.status_code == 302
+    assert home.location == "/login?next=/"
+
+    signup = saas_client.get("/signup")
+    assert signup.status_code == 404
+
+    login = saas_client.get("/login")
+    assert login.status_code == 200
+    assert b"Create account" not in login.data
+    assert b'href="/signup"' not in login.data
+
+
+def test_signup_attempts_are_rate_limited(saas_client):
+    token = _csrf(saas_client, "/signup")
+    incomplete_signup = {"csrf_token": token, "business_name": ""}
+
+    for _ in range(3):
+        response = saas_client.post("/signup", data=incomplete_signup)
+        assert response.status_code == 200
+
+    assert saas_client.post("/signup", data=incomplete_signup).status_code == 429
+
+
+def test_unverified_session_cannot_access_private_apis(saas_client, saas_app):
+    _signup(saas_client)
+    saas_app.config["REQUIRE_EMAIL_VERIFICATION"] = True
+
+    dashboard = saas_client.get("/api/dashboard")
+    assert dashboard.status_code == 403
+    assert dashboard.json == {"error": "email verification required"}
+
+    with saas_client.session_transaction() as browser_session:
+        csrf_token = browser_session["csrf_token"]
+    chat = saas_client.post(
+        "/api/assistant/chat",
+        json={"question": "What needs attention?"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert chat.status_code == 403
+    assert chat.json == {"error": "email verification required"}
+
+    with saas_app.app_context():
+        actor = User.query.one()
+        actor.email_verified_at = utcnow()
+        db.session.commit()
+
+    assert saas_client.get("/api/dashboard").status_code == 200
+
+
+def test_public_signup_migration_trusts_existing_password_accounts(
+    saas_client, saas_app
+):
+    _signup(saas_client)
+
+    with saas_app.app_context():
+        actor = User.query.one()
+        assert actor.email_verified_at is None
+        db.session.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS schema_migrations ("
+                "version VARCHAR(64) PRIMARY KEY, "
+                "applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+        )
+        for version in SCHEMA_VERSIONS[:-1]:
+            db.session.execute(
+                text(
+                    "INSERT OR IGNORE INTO schema_migrations (version) VALUES (:version)"
+                ),
+                {"version": version},
+            )
+        db.session.commit()
+
+        result = migrate_schema()
+        db.session.expire_all()
+
+        assert result.applied_versions == (SPRINT_11_SCHEMA_VERSION,)
+        assert User.query.one().email_verified_at is not None
+
+
+def test_failed_verification_resend_keeps_previous_link_and_is_rate_limited(
+    saas_client, saas_app, monkeypatch
+):
+    _signup(saas_client)
+    with saas_app.app_context():
+        original = AuthToken.query.filter_by(
+            purpose="email_verification", consumed_at=None
+        ).one()
+        original_id = original.id
+
+    saas_app.config.update(
+        APP_ENV="production",
+        REQUIRE_EMAIL_VERIFICATION=True,
+    )
+    monkeypatch.setattr("app.routes._send_auth_link", lambda **_kwargs: False)
+    with saas_client.session_transaction() as browser_session:
+        csrf_token = browser_session["csrf_token"]
+
+    for _ in range(2):
+        response = saas_client.post(
+            "/verification/resend", data={"csrf_token": csrf_token}
+        )
+        assert response.status_code == 302
+
+    assert (
+        saas_client.post(
+            "/verification/resend", data={"csrf_token": csrf_token}
+        ).status_code
+        == 429
+    )
+    with saas_app.app_context():
+        active = AuthToken.query.filter_by(
+            purpose="email_verification", consumed_at=None
+        ).all()
+        assert [record.id for record in active] == [original_id]
+
+
+def test_failed_password_reset_keeps_previous_link_and_is_rate_limited(
+    saas_client, saas_app, monkeypatch
+):
+    _signup(saas_client)
+    with saas_app.app_context():
+        actor = User.query.one()
+        _, original = AuthTokenService.password_reset(actor)
+        original_id = original.id
+    _logout(saas_client)
+
+    saas_app.config["APP_ENV"] = "production"
+    monkeypatch.setattr("app.routes._send_auth_link", lambda **_kwargs: False)
+    csrf_token = _csrf(saas_client, "/forgot-password")
+    for email in ("admin@freshmart.test", "unknown-one@freshmart.test"):
+        payload = {"csrf_token": csrf_token, "email": email}
+        assert saas_client.post("/forgot-password", data=payload).status_code == 302
+    blocked = {"csrf_token": csrf_token, "email": "unknown-two@freshmart.test"}
+    assert saas_client.post("/forgot-password", data=blocked).status_code == 429
+
+    with saas_app.app_context():
+        active = AuthToken.query.filter_by(
+            purpose="password_reset", consumed_at=None
+        ).all()
+        assert [record.id for record in active] == [original_id]
+
+
+def test_auth_mailer_handles_ses_delivery_failure(
+    saas_app, monkeypatch, caplog
+):
+    from botocore.exceptions import ClientError
+
+    class FailingSESClient:
+        def send_email(self, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "MessageRejected", "Message": "rejected"}},
+                "SendEmail",
+            )
+
+    monkeypatch.setattr(
+        "app.services.saas_auth.boto3.client",
+        lambda *_args, **_kwargs: FailingSESClient(),
+    )
+    saas_app.config.update(
+        AUTH_EMAIL_ENABLED=True,
+        SES_FROM_EMAIL="noreply@stockpilotai.in",
+    )
+
+    with saas_app.app_context():
+        sent = AuthMailer.send_link(
+            recipient="admin@freshmart.test",
+            subject="Verify your email",
+            text_body="Verify",
+            html_body="<p>Verify</p>",
+        )
+
+    assert sent is False
+    assert "Auth email delivery failed (ClientError)" in caplog.text
 
 
 def test_single_business_warehouse_creation_settings_and_catalogue_isolation(
@@ -288,7 +509,8 @@ def test_invitation_verification_password_reset_and_durable_throttle(
         assert throttle_client.post("/login", data=payload).status_code == 200
     assert throttle_client.post("/login", data=payload).status_code == 429
     with saas_app.app_context():
-        assert LoginAttempt.query.count() == 3
+        login_key = LoginThrottle.key("127.0.0.1", "admin@freshmart.test")
+        assert LoginAttempt.query.filter_by(attempt_key_hash=login_key).count() == 3
 
 
 def test_mfa_challenge_and_tenant_bound_cursor_pagination(saas_client, saas_app):

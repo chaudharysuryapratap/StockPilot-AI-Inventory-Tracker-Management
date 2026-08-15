@@ -12,6 +12,7 @@ from datetime import timedelta, timezone
 from urllib.parse import quote
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from flask import current_app
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -199,6 +200,7 @@ class WorkspaceService:
             email=normalized_email,
             payload={"role": normalized_role, "invited_by": acting_user.id},
             ttl=timedelta(hours=current_app.config["INVITATION_EXPIRY_HOURS"]),
+            replace_existing=False,
         )
 
     @staticmethod
@@ -264,6 +266,7 @@ class AuthTokenService:
         email: str | None = None,
         payload: dict | None = None,
         ttl: timedelta,
+        replace_existing: bool = True,
     ) -> tuple[str, AuthToken]:
         query = AuthToken.query.filter_by(purpose=purpose, consumed_at=None)
         if workspace:
@@ -272,8 +275,9 @@ class AuthTokenService:
             query = query.filter_by(user_id=user.id)
         elif email:
             query = query.filter(func.lower(AuthToken.email) == email.lower())
-        for existing in query.all():
-            existing.consumed_at = utcnow()
+        if replace_existing:
+            for existing in query.all():
+                existing.consumed_at = utcnow()
         raw = secrets.token_urlsafe(32)
         record = AuthToken(
             purpose=purpose,
@@ -289,6 +293,29 @@ class AuthTokenService:
         return raw, record
 
     @staticmethod
+    def activate_replacement(record: AuthToken) -> None:
+        query = AuthToken.query.filter(
+            AuthToken.purpose == record.purpose,
+            AuthToken.consumed_at.is_(None),
+            AuthToken.id != record.id,
+        )
+        if record.workspace_id is not None:
+            query = query.filter(AuthToken.workspace_id == record.workspace_id)
+        if record.user_id is not None:
+            query = query.filter(AuthToken.user_id == record.user_id)
+        elif record.email:
+            query = query.filter(func.lower(AuthToken.email) == record.email.lower())
+        now = utcnow()
+        for existing in query.all():
+            existing.consumed_at = now
+        db.session.commit()
+
+    @staticmethod
+    def discard(record: AuthToken) -> None:
+        db.session.delete(record)
+        db.session.commit()
+
+    @staticmethod
     def resolve(raw: object, purpose: str) -> AuthToken | None:
         normalized = str(raw or "").strip()
         if not normalized:
@@ -301,21 +328,27 @@ class AuthTokenService:
         return record
 
     @staticmethod
-    def verification(user: User) -> tuple[str, AuthToken]:
+    def verification(
+        user: User, *, replace_existing: bool = True
+    ) -> tuple[str, AuthToken]:
         return AuthTokenService.issue(
             "email_verification",
             user=user,
             workspace=user.workspace,
             ttl=timedelta(hours=current_app.config["EMAIL_VERIFICATION_HOURS"]),
+            replace_existing=replace_existing,
         )
 
     @staticmethod
-    def password_reset(user: User) -> tuple[str, AuthToken]:
+    def password_reset(
+        user: User, *, replace_existing: bool = True
+    ) -> tuple[str, AuthToken]:
         return AuthTokenService.issue(
             "password_reset",
             user=user,
             workspace=user.workspace,
             ttl=timedelta(minutes=current_app.config["PASSWORD_RESET_MINUTES"]),
+            replace_existing=replace_existing,
         )
 
 
@@ -342,6 +375,83 @@ class LoginThrottle:
             LoginAttempt.query.filter_by(attempt_key_hash=key, succeeded=False).delete()
         else:
             db.session.add(LoginAttempt(attempt_key_hash=key, succeeded=False))
+        cutoff = utcnow() - timedelta(days=1)
+        LoginAttempt.query.filter(LoginAttempt.attempted_at < cutoff).delete()
+        db.session.commit()
+
+
+class SignupThrottle:
+    @staticmethod
+    def key(remote_addr: str | None) -> str:
+        return _token_hash(f"signup:{remote_addr or 'unknown'}")
+
+    @staticmethod
+    def is_limited(remote_addr: str | None) -> bool:
+        cutoff = utcnow() - timedelta(
+            seconds=current_app.config["SIGNUP_WINDOW_SECONDS"]
+        )
+        return LoginAttempt.query.filter(
+            LoginAttempt.attempt_key_hash == SignupThrottle.key(remote_addr),
+            LoginAttempt.succeeded.is_(False),
+            LoginAttempt.attempted_at >= cutoff,
+        ).count() >= current_app.config["SIGNUP_MAX_ATTEMPTS"]
+
+    @staticmethod
+    def record(remote_addr: str | None) -> None:
+        db.session.add(
+            LoginAttempt(
+                attempt_key_hash=SignupThrottle.key(remote_addr), succeeded=False
+            )
+        )
+        cutoff = utcnow() - timedelta(days=1)
+        LoginAttempt.query.filter(LoginAttempt.attempted_at < cutoff).delete()
+        db.session.commit()
+
+
+class AuthActionThrottle:
+    @staticmethod
+    def key(
+        remote_addr: str | None, purpose: object, identifier: object
+    ) -> str:
+        material = (
+            f"auth-link:{str(purpose or '').strip().lower()}:"
+            f"{remote_addr or 'unknown'}:{str(identifier or '').strip().lower()}"
+        )
+        return _token_hash(material)
+
+    @staticmethod
+    def is_limited(
+        remote_addr: str | None, purpose: object, identifier: object
+    ) -> bool:
+        cutoff = utcnow() - timedelta(
+            seconds=current_app.config["AUTH_LINK_WINDOW_SECONDS"]
+        )
+        keys = {
+            AuthActionThrottle.key(remote_addr, purpose, identifier),
+            AuthActionThrottle.key(remote_addr, purpose, "*"),
+        }
+        return any(
+            LoginAttempt.query.filter(
+                LoginAttempt.attempt_key_hash == key,
+                LoginAttempt.succeeded.is_(False),
+                LoginAttempt.attempted_at >= cutoff,
+            ).count()
+            >= current_app.config["AUTH_LINK_MAX_ATTEMPTS"]
+            for key in keys
+        )
+
+    @staticmethod
+    def record(remote_addr: str | None, purpose: object, identifier: object) -> None:
+        keys = {
+            AuthActionThrottle.key(remote_addr, purpose, identifier),
+            AuthActionThrottle.key(remote_addr, purpose, "*"),
+        }
+        db.session.add_all(
+            [
+                LoginAttempt(attempt_key_hash=key, succeeded=False)
+                for key in keys
+            ]
+        )
         cutoff = utcnow() - timedelta(days=1)
         LoginAttempt.query.filter(LoginAttempt.attempted_at < cutoff).delete()
         db.session.commit()
@@ -447,20 +557,26 @@ class AuthMailer:
         if not sender:
             current_app.logger.warning("Auth email not sent: SES_FROM_EMAIL is missing")
             return False
-        client = boto3.client("sesv2", region_name=current_app.config["AWS_REGION"])
-        client.send_email(
-            FromEmailAddress=sender,
-            Destination={"ToAddresses": [recipient]},
-            Content={
-                "Simple": {
-                    "Subject": {"Data": subject},
-                    "Body": {
-                        "Text": {"Data": text_body},
-                        "Html": {"Data": html_body},
-                    },
-                }
-            },
-        )
+        try:
+            client = boto3.client("sesv2", region_name=current_app.config["AWS_REGION"])
+            client.send_email(
+                FromEmailAddress=sender,
+                Destination={"ToAddresses": [recipient]},
+                Content={
+                    "Simple": {
+                        "Subject": {"Data": subject},
+                        "Body": {
+                            "Text": {"Data": text_body},
+                            "Html": {"Data": html_body},
+                        },
+                    }
+                },
+            )
+        except (BotoCoreError, ClientError) as error:
+            current_app.logger.warning(
+                "Auth email delivery failed (%s)", error.__class__.__name__
+            )
+            return False
         return True
 
 
