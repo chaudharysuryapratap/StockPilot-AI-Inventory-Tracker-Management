@@ -6,7 +6,10 @@
 
 A production-minded inventory operations platform for retailers and restaurants. StockPilot combines a live stock ledger, multi-warehouse workflows, purchasing, fulfilment, returns, demand forecasting, and owner-ready actions in one business-isolated application.
 
-**[Open the live app](https://stockpilotai.in)** · **[Health endpoint](https://stockpilotai.in/api/health)** · **[Run locally](#quick-start)** · **[Create an account](#create-your-first-account)**
+[![Open the live StockPilot website](https://img.shields.io/badge/Open_Live_Website-stockpilotai.in-146C64?style=for-the-badge&logo=googlechrome&logoColor=white)](https://stockpilotai.in/login?next=/)
+[![Local setup](https://img.shields.io/badge/Local_Setup-Quick_Start-E8A33D?style=for-the-badge)](#quick-start)
+
+**[Screenshots](#screenshots)** · **[Features](#what-is-included)** · **[Health endpoint](https://stockpilotai.in/api/health)** · **[Create a local account](#create-your-first-account)**
 
 ![StockPilot inventory command centre with live warehouse totals](docs/screenshots/dashboard.png)
 
@@ -16,7 +19,7 @@ The forecasting engine calculates demand, lead-time coverage, projected stockout
 
 ## Live app
 
-The portfolio deployment runs at **[stockpilotai.in](https://stockpilotai.in)**. It is a private, invite-only environment: public `/signup` is disabled in production, so an existing Admin must create or invite live users. To explore onboarding without production access, run the app locally and use `/signup`.
+StockPilot is live at **[Open live sign in](https://stockpilotai.in/login?next=/)**. Production is private and invite-only: there is no public signup, so an Admin must create or invite live users. To create a fresh business and Administrator account, [run StockPilot locally](#quick-start), then follow [Create your first local account](#create-your-first-account).
 
 The current live stack is Nginx and Gunicorn on EC2 with MariaDB, HTTPS, S3 backups, and deployment through GitHub Actions, AWS OIDC, and Systems Manager. The repository also includes the RDS MySQL reference architecture described below.
 

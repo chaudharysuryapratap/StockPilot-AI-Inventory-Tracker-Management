@@ -111,6 +111,8 @@ def test_modern_signup_creates_unique_business_warehouse_and_membership(
     assert b"Business username" in page.data
     assert b"Warehouse address" in page.data
     assert b"Build your inventory command centre" in page.data
+    assert b"Open the live StockPilot website" in page.data
+    assert b'href="https://stockpilotai.in/login?next=/"' in page.data
 
     _signup(saas_client)
     with saas_app.app_context():
