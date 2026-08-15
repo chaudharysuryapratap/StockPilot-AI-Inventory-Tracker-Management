@@ -25,6 +25,10 @@ Parameters:
     Default: stockpilotai.in
   BackupBucketName:
     Type: String
+  GitHubOidcSubject:
+    Type: String
+    Default: repo:chaudharysuryapratap@153225551/StockPilot-AI-Inventory-Tracker-Management@1319514090:ref:refs/heads/main
+    Description: Immutable GitHub Actions OIDC subject for this repository's main branch.
 
 Resources:
   BackupBucket:
@@ -94,7 +98,7 @@ Resources:
                 Action:
                   - ses:SendEmail
                   - ses:SendRawEmail
-                Resource: '*'
+                Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${DomainName}'
               - Sid: StoreInitialLogin
                 Effect: Allow
                 Action:
@@ -106,6 +110,53 @@ Resources:
     Properties:
       Roles:
         - !Ref InstanceRole
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: StockPilot
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubOidcSubject
+      Policies:
+        - PolicyName: DeployStockPilotThroughSSM
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: StartDeployment
+                Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript'
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${WebInstance}'
+              - Sid: ReadDeploymentResult
+                Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: '*'
+      Tags:
+        - Key: Project
+          Value: StockPilot
 
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -214,3 +265,5 @@ Outputs:
     Value: !Ref BackupBucket
   Domain:
     Value: !Ref DomainName
+  GitHubDeployRoleArn:
+    Value: !GetAtt GitHubDeployRole.Arn

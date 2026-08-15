@@ -368,6 +368,129 @@ def test_mfa_challenge_and_tenant_bound_cursor_pagination(saas_client, saas_app)
         ).count() == 1
 
 
+def test_change_password_requires_csrf_current_password_and_confirmation(
+    saas_client, saas_app
+):
+    _signup(saas_client)
+    security = saas_client.get("/security")
+    assert security.status_code == 200
+    assert b"Change your password" in security.data
+    assert b'name="current_password"' in security.data
+    assert b'name="new_password"' in security.data
+    assert b'name="new_password_confirm"' in security.data
+    assert b'minlength="10" maxlength="128"' in security.data
+
+    assert saas_client.post(
+        "/security",
+        data={
+            "action": "change_password",
+            "current_password": "correct-horse-admin",
+            "new_password": "replacement-password",
+            "new_password_confirm": "replacement-password",
+        },
+    ).status_code == 400
+
+    with saas_client.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    wrong_current = saas_client.post(
+        "/security",
+        data={
+            "csrf_token": token,
+            "action": "change_password",
+            "current_password": "wrong-password",
+            "new_password": "replacement-password",
+            "new_password_confirm": "replacement-password",
+        },
+    )
+    assert wrong_current.status_code == 200
+    assert b"Current password is incorrect." in wrong_current.data
+
+    mismatch = saas_client.post(
+        "/security",
+        data={
+            "csrf_token": token,
+            "action": "change_password",
+            "current_password": "correct-horse-admin",
+            "new_password": "replacement-password",
+            "new_password_confirm": "different-password",
+        },
+    )
+    assert mismatch.status_code == 200
+    assert b"Password confirmation does not match." in mismatch.data
+
+    too_short = saas_client.post(
+        "/security",
+        data={
+            "csrf_token": token,
+            "action": "change_password",
+            "current_password": "correct-horse-admin",
+            "new_password": "short",
+            "new_password_confirm": "short",
+        },
+    )
+    assert too_short.status_code == 200
+    assert b"Password must be between 10 and 128 characters." in too_short.data
+    with saas_app.app_context():
+        admin = User.query.filter_by(email="admin@freshmart.test").one()
+        assert admin.check_password("correct-horse-admin")
+
+
+def test_change_password_forces_reauthentication_and_preserves_mfa(
+    saas_client, saas_app
+):
+    _signup(saas_client)
+    with saas_app.app_context():
+        admin = User.query.one()
+        secret = MFAService.generate_secret()
+        admin.mfa_secret_encrypted = MFAService.encrypt(secret)
+        db.session.commit()
+        MFAService.enable(admin, secret, MFAService.code(secret))
+        reset_raw, reset_record = AuthTokenService.password_reset(admin)
+        reset_id = reset_record.id
+        encrypted_secret = admin.mfa_secret_encrypted
+        mfa_enabled_at = admin.mfa_enabled_at
+
+    with saas_client.session_transaction() as browser_session:
+        token = browser_session["csrf_token"]
+    changed = saas_client.post(
+        "/security",
+        data={
+            "csrf_token": token,
+            "action": "change_password",
+            "current_password": "correct-horse-admin",
+            "new_password": "replacement-password",
+            "new_password_confirm": "replacement-password",
+        },
+    )
+    assert changed.status_code == 302
+    assert changed.location == "/login"
+    with saas_client.session_transaction() as browser_session:
+        assert "user_id" not in browser_session
+
+    with saas_app.app_context():
+        admin = User.query.one()
+        assert not admin.check_password("correct-horse-admin")
+        assert admin.check_password("replacement-password")
+        assert admin.mfa_secret_encrypted == encrypted_secret
+        assert admin.mfa_enabled_at == mfa_enabled_at
+        assert db.session.get(AuthToken, reset_id).consumed_at is not None
+        assert AuthTokenService.resolve(reset_raw, "password_reset") is None
+
+    rejected = _login(saas_client, password="correct-horse-admin")
+    assert rejected.status_code == 200
+    assert b"Incorrect email or password." in rejected.data
+    accepted = _login(saas_client, password="replacement-password")
+    assert accepted.status_code == 302
+    assert accepted.location == "/mfa/challenge"
+    token = _csrf(saas_client, "/mfa/challenge")
+    verified = saas_client.post(
+        "/mfa/challenge",
+        data={"csrf_token": token, "code": MFAService.code(secret)},
+    )
+    assert verified.status_code == 302
+    assert verified.location == "/"
+
+
 def test_viewer_is_read_only_and_manager_cannot_add_warehouses(
     saas_client, saas_app
 ):

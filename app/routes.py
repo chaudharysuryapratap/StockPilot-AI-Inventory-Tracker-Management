@@ -996,6 +996,32 @@ def security_page():
                 db.session.commit()
                 flash("Multi-factor authentication has been disabled.", "success")
                 return redirect(url_for("web.security_page"))
+        elif action == "change_password":
+            current_password = str(request.form.get("current_password") or "")
+            new_password = str(request.form.get("new_password") or "")
+            confirmation = str(request.form.get("new_password_confirm") or "")
+            if not actor.check_password(current_password):
+                flash("Current password is incorrect.", "error")
+            elif len(new_password) < 10 or len(new_password) > 128:
+                flash("Password must be between 10 and 128 characters.", "error")
+            elif new_password != confirmation:
+                flash("Password confirmation does not match.", "error")
+            else:
+                actor.set_password(new_password)
+                now = utcnow()
+                for active in AuthToken.query.filter_by(
+                    user_id=actor.id,
+                    purpose="password_reset",
+                    consumed_at=None,
+                ).all():
+                    active.consumed_at = now
+                db.session.commit()
+                session.clear()
+                flash(
+                    "Your password has been changed. Sign in again with your new password.",
+                    "success",
+                )
+                return redirect(url_for("web.login"))
     if not actor.mfa_enabled_at and not actor.mfa_secret_encrypted:
         actor.mfa_secret_encrypted = MFAService.encrypt(MFAService.generate_secret())
         db.session.commit()

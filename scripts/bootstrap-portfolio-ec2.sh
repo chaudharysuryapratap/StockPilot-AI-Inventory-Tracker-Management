@@ -117,7 +117,7 @@ SQL
     echo 'DEFAULT_BUSINESS_USERNAME=stockpilot'
     echo 'DEFAULT_STAFF_EMAIL=admin@stockpilotai.in'
     echo 'REQUIRE_EMAIL_VERIFICATION=false'
-    echo 'AUTH_EMAIL_ENABLED=false'
+    echo 'AUTH_EMAIL_ENABLED=true'
     echo "MFA_ENCRYPTION_KEY=$mfa_key"
     echo 'MFA_ISSUER=StockPilot'
     echo 'OIDC_ENABLED=false'
@@ -128,7 +128,9 @@ SQL
     echo 'AWS_REGION=ap-south-1'
     echo 'BEDROCK_ENABLED=true'
     echo 'BEDROCK_MODEL_ID=apac.amazon.nova-micro-v1:0'
-    echo 'SES_ENABLED=false'
+    echo 'SES_ENABLED=true'
+    echo "SES_FROM_EMAIL=noreply@$DOMAIN"
+    echo 'ALERT_RECIPIENTS=chaudharysuryapratap@gmail.com'
     echo "BACKUP_S3_BUCKET=$BACKUP_BUCKET"
     echo 'GUNICORN_WORKERS=1'
     echo 'GUNICORN_THREADS=2'
@@ -165,6 +167,7 @@ fi
 
 install -m 755 "$APP_DIR/scripts/run-inventory-analysis" /usr/local/bin/run-inventory-analysis
 install -m 750 "$APP_DIR/scripts/backup-portfolio-db" /usr/local/sbin/backup-stockpilot
+install -m 750 "$APP_DIR/scripts/deploy-portfolio-ec2" /usr/local/sbin/deploy-stockpilot
 install -m 644 "$APP_DIR/deploy/systemd/inventory-tracker.service" /etc/systemd/system/inventory-tracker.service
 install -m 644 "$APP_DIR/deploy/systemd/stockpilot-backup.service" /etc/systemd/system/stockpilot-backup.service
 install -m 644 "$APP_DIR/deploy/systemd/stockpilot-backup.timer" /etc/systemd/system/stockpilot-backup.timer

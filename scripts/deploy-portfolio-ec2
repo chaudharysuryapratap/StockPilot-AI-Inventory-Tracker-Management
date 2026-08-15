@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Deploy the latest tested main branch to the StockPilot portfolio server.
+set -euo pipefail
+
+SOURCE_DIR="/opt/stockpilot-source"
+APP_DIR="/opt/ai-inventory-tracker"
+APP_USER="inventory"
+ENV_FILE="/etc/ai-inventory-tracker.env"
+DEPLOY_LOCK="/run/lock/stockpilot-deploy.lock"
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+  echo "Run this script as root." >&2
+  exit 1
+fi
+if [[ ! -d "$SOURCE_DIR/.git" || ! -r "$ENV_FILE" ]]; then
+  echo "StockPilot source or environment configuration is missing." >&2
+  exit 1
+fi
+
+exec 9>"$DEPLOY_LOCK"
+if ! flock -n 9; then
+  echo "Another StockPilot deployment is already running." >&2
+  exit 1
+fi
+
+cd "$SOURCE_DIR"
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "The deployment checkout contains local tracked changes; refusing to overwrite them." >&2
+  exit 1
+fi
+
+git fetch --prune origin main
+target_revision="$(git rev-parse origin/main)"
+current_revision="$(git rev-parse HEAD)"
+echo "Deploying StockPilot ${target_revision}."
+
+# Back up the database before applying any schema or application changes.
+/usr/local/sbin/backup-stockpilot
+git checkout --detach "$target_revision"
+
+rsync -a --delete \
+  --exclude '.git' \
+  --exclude '.venv' \
+  --exclude '.env' \
+  --exclude 'instance' \
+  --exclude 'outputs' \
+  --exclude '__pycache__' \
+  "$SOURCE_DIR/" "$APP_DIR/"
+
+"$APP_DIR/.venv/bin/pip" install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+install -m 755 "$APP_DIR/scripts/run-inventory-analysis" /usr/local/bin/run-inventory-analysis
+install -m 750 "$APP_DIR/scripts/backup-portfolio-db" /usr/local/sbin/backup-stockpilot
+install -m 750 "$APP_DIR/scripts/deploy-portfolio-ec2" /usr/local/sbin/deploy-stockpilot
+install -m 644 "$APP_DIR/deploy/systemd/inventory-tracker.service" /etc/systemd/system/inventory-tracker.service
+install -m 644 "$APP_DIR/deploy/systemd/stockpilot-backup.service" /etc/systemd/system/stockpilot-backup.service
+install -m 644 "$APP_DIR/deploy/systemd/stockpilot-backup.timer" /etc/systemd/system/stockpilot-backup.timer
+
+chown -R root:"$APP_USER" "$APP_DIR"
+chown "$APP_USER:$APP_USER" "$APP_DIR/instance"
+chmod -R g-w,o-w "$APP_DIR"
+
+set -a
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+set +a
+(
+  cd "$APP_DIR"
+  runuser -u "$APP_USER" --preserve-environment -- \
+    "$APP_DIR/.venv/bin/flask" --app run migrate-schema
+)
+
+systemctl daemon-reload
+nginx -t
+systemctl restart inventory-tracker
+
+healthy=false
+for _ in {1..30}; do
+  if curl -fsS http://127.0.0.1:8000/api/health \
+    | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+    healthy=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$healthy" != true ]]; then
+  echo "StockPilot did not become healthy after deployment." >&2
+  journalctl -u inventory-tracker --no-pager -n 100 >&2
+  exit 1
+fi
+
+echo "StockPilot deployment complete: ${current_revision} -> ${target_revision}."
