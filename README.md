@@ -1,35 +1,53 @@
 # StockPilot AI — Inventory Tracker & Management
 
-A portfolio-ready inventory system for retailers and restaurants. It consumes sale events in near real time, updates stock safely, forecasts demand from historical sales, maintains supplier, fulfilment, and returns operations, exports risk/valuation reports, and emails owner-ready reorder actions.
+[![CI](https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management/actions/workflows/ci.yml/badge.svg)](https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management/actions/workflows/ci.yml)
+![Python 3.12 and 3.13](https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)
+![Flask 3.1](https://img.shields.io/badge/Flask-3.1-000000?logo=flask&logoColor=white)
 
-StockPilot supports multiple isolated businesses in one deployment while keeping
-each user account attached to one business. A business can operate many warehouses
-and assign Admin, Manager, Picker, or read-only Viewer access. Workspace rows remain
-the internal ownership and audit boundary for catalogues, warehouses, orders,
-settings, integrations, and AI context; signed cursors and every service lookup are
-tenant-bound.
+A production-minded inventory operations platform for retailers and restaurants. StockPilot combines a live stock ledger, multi-warehouse workflows, purchasing, fulfilment, returns, demand forecasting, and owner-ready actions in one business-isolated application.
 
-The application is deliberately split into two kinds of intelligence:
+**[Open the live app](https://stockpilotai.in)** · **[Health endpoint](https://stockpilotai.in/api/health)** · **[Run locally](#quick-start)** · **[Create an account](#create-your-first-account)**
 
-- A transparent forecasting engine calculates daily demand, lead-time coverage, stockout date, and reorder quantity from the sales record.
-- Amazon Bedrock receives only the resulting business metrics and writes a concise, actionable explanation. It does not invent or override the numeric recommendation.
+![StockPilot inventory command centre with live warehouse totals](docs/screenshots/dashboard.png)
 
-That separation makes the project more credible than presenting an LLM as a time-series forecasting engine.
+StockPilot supports multiple isolated businesses in one deployment while keeping each user account attached to one business. A business can operate many warehouses and assign Admin, Manager, Picker, or read-only Viewer access. Catalogues, warehouses, orders, settings, integrations, and AI context stay tenant-bound.
+
+The forecasting engine calculates demand, lead-time coverage, projected stockout, and reorder quantity from recorded sales. Amazon Bedrock is optional and receives only those calculated business metrics to write a concise explanation; it never replaces the numeric forecast.
+
+## Live app
+
+The portfolio deployment runs at **[stockpilotai.in](https://stockpilotai.in)**. It is a private, invite-only environment: public `/signup` is disabled in production, so an existing Admin must create or invite live users. To explore onboarding without production access, run the app locally and use `/signup`.
+
+The current live stack is Nginx and Gunicorn on EC2 with MariaDB, HTTPS, S3 backups, and deployment through GitHub Actions, AWS OIDC, and Systems Manager. The repository also includes the RDS MySQL reference architecture described below.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/account-setup.png" alt="StockPilot business and administrator account setup"><br><sub>Business, primary warehouse, and Admin onboarding.</sub></td>
+    <td width="50%"><img src="docs/screenshots/stock-catalogue.png" alt="StockPilot product catalogue with stock by warehouse"><br><sub>Searchable catalogue backed by the live stock ledger.</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/purchasing.png" alt="StockPilot purchasing and receiving workflow"><br><sub>Catalogue, purchase-order, and warehouse-receiving workflow.</sub></td>
+  </tr>
+</table>
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    POS[POS / store / mobile app] -->|signed sale event| EC2[EC2: Flask control panel]
-    EC2 -->|transactions| RDS[(RDS MySQL)]
-    Scheduler[EventBridge Scheduler] --> Invoker[Lambda invoker]
-    Invoker --> SSM[Systems Manager Run Command]
-    SSM -->|daily analysis| EC2
-    EC2 -->|narrative| Bedrock[Amazon Bedrock]
-    EC2 -->|critical owner alert| SES[Amazon SES]
+    Browser["Browser / picker PWA"] -->|"HTTPS"| Nginx["Nginx reverse proxy"]
+    POS["POS / store integration"] -->|"Signed sale event"| Nginx
+    Nginx --> App["Gunicorn + Flask"]
+    App --> SQL[("SQLite local / MariaDB live / RDS MySQL")]
+    Scheduler["EventBridge Scheduler"] --> Invoker["Lambda invoker"]
+    Invoker --> SSM["Systems Manager Run Command"]
+    SSM -->|"Daily analysis"| App
+    App -->|"Optional narrative"| Bedrock["Amazon Bedrock"]
+    App -->|"Optional owner alert"| SES["Amazon SES"]
 ```
 
-`EventBridge Scheduler` is used for the scheduled job because it is the modern successor to scheduled CloudWatch Events rules. It is still the same event-driven idea described in the project brief, with timezone and retry controls built in.
+EventBridge Scheduler runs the daily analysis with timezone and retry controls. Local development needs none of the AWS services: SQLite is automatic, and Bedrock and SES remain disabled unless configured.
 
 ## What is included
 
@@ -69,37 +87,77 @@ flowchart TD
 | Automated owner alerts | Optional SES v2 text + HTML delivery for daily actions or critical-only risks, with a durable delivery audit |
 | Scheduled analysis | CloudFormation template: EventBridge Scheduler → Lambda → SSM → EC2 command |
 
-## Run locally first
+## Quick start
 
-You can demonstrate the entire UI and forecasting workflow without an AWS account. SQLite is the local default; Bedrock and SES stay disabled unless configured.
+You need Git and Python 3.12 or 3.13. Node, MySQL, and an AWS account are not required for local use.
 
 ```bash
-cd ai-inventory-tracker
-cp .env.example .env
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-# Upgrades an older StockPilot database without losing its stock records.
-.venv/bin/flask --app run migrate-schema
-
-# Populate two locations/bins, four products, and 35 days of demo POS history.
-.venv/bin/flask --app run seed-demo --reset
-
-# Optional production-style setup: create the first admin interactively.
-# For a local demo, you can instead open /signup on first launch.
-.venv/bin/flask --app run create-admin
-
-# Generate forecasts and recommendations.
-.venv/bin/flask --app run analyze-inventory
-
-# Optional: email only critical risks and record the delivery attempt.
-.venv/bin/flask --app run analyze-inventory --send-email --critical-only
-
-# Open http://127.0.0.1:5000
-.venv/bin/flask --app run run --debug
+git clone https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management.git
+cd StockPilot-AI-Inventory-Tracker-Management
 ```
 
-On a fresh database, StockPilot redirects to `/signup` until the first Admin creates a business identity and primary warehouse. An Admin can then add warehouses and bins from one section, invite people, create staff accounts, or configure OIDC. Every signed-in user can enable TOTP MFA from **Security**. Camera access works on `localhost`; a deployed instance must use HTTPS for browser camera permission.
+<details open>
+<summary><strong>macOS / Linux</strong></summary>
+
+```bash
+cp .env.example .env
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+</details>
+
+<details>
+<summary><strong>Windows PowerShell</strong></summary>
+
+```powershell
+Copy-Item .env.example .env
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+</details>
+
+Prepare a demo database, calculate the first recommendations, and start Flask's live-reload development server:
+
+```bash
+python -m flask --app run migrate-schema
+python -m flask --app run seed-demo --reset
+python -m flask --app run analyze-inventory
+python -m flask --app run run --debug
+```
+
+Open **[http://127.0.0.1:5000](http://127.0.0.1:5000)**. On first launch StockPilot redirects to `/signup`.
+
+> [!WARNING]
+> `seed-demo --reset` deletes the current database contents before loading two warehouses, four products, and 35 days of sample sales. Run it only before creating your account, and never against data you need to keep.
+
+### Create your first account
+
+1. Open `http://127.0.0.1:5000/signup`.
+2. Enter the business name and a unique business username containing 3–63 lowercase letters, numbers, or hyphens.
+3. Enter the primary warehouse name and address.
+4. Enter the first Administrator's name and work email.
+5. Create and confirm a password containing 10–128 characters, accept the isolation notice, and select **Create business account**.
+6. For later sign-ins, use all three credentials: business username, email address, and password.
+
+Local development disables email verification by default. When `REQUIRE_EMAIL_VERIFICATION=true`, the Admin must follow the single-use verification link before using the protected application. Every signed-in user can enable TOTP MFA from **Security**.
+
+An Admin can add teammates from **Users & access** by creating a staff account or sending a single-use invitation. Team roles are Admin, Manager, Picker, and Viewer.
+
+### Local and production servers
+
+StockPilot is a server-rendered Flask application, so the VS Code static **Live Server** extension is not applicable.
+
+| Environment | Command / entry point | Address |
+| --- | --- | --- |
+| Local development | `python -m flask --app run run --debug` | `http://127.0.0.1:5000` with live reload |
+| Local network testing | `python run.py` | `0.0.0.0:5000`; use only on a trusted network |
+| Production | Nginx → Gunicorn → Flask | HTTPS publicly; Gunicorn listens on `127.0.0.1:8000` |
+
+Camera access works on `localhost`; every deployed scanner must use HTTPS for browser camera permission. Production web signup should be enabled only with email verification and an authentication email provider configured.
 
 Role boundaries:
 
