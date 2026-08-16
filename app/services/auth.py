@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from app import db
-from app.models import InventoryLocation, User, Workspace, WorkspaceMembership
+from app.models import InventoryLocation, User, Workspace, WorkspaceMembership, utcnow
 from app.services.identity import ensure_default_identity, normalize_business_username
 
 
@@ -92,11 +92,17 @@ def activate_legacy_credentials() -> User | None:
     if not username or not password:
         return None
     actor = ensure_default_identity()
+    changed = False
     if not actor.password_hash:
         actor.name = username[:255]
         actor.set_password(password)
         actor.role = "admin"
         actor.is_active = True
+        changed = True
+    if actor.email_verified_at is None:
+        actor.email_verified_at = utcnow()
+        changed = True
+    if changed:
         db.session.commit()
     return actor
 
@@ -199,7 +205,9 @@ class UserService:
         return values
 
     @staticmethod
-    def bootstrap_admin(payload: Mapping[str, object]) -> User:
+    def bootstrap_admin(
+        payload: Mapping[str, object], *, trusted_setup: bool = False
+    ) -> User:
         if not authentication_setup_required():
             raise AuthenticationError("Account setup has already been completed.")
 
@@ -238,6 +246,8 @@ class UserService:
         actor.role = "admin"
         actor.is_active = True
         actor.set_password(values["password"])
+        if trusted_setup:
+            actor.email_verified_at = utcnow()
         membership = WorkspaceMembership.query.filter_by(
             user_id=actor.id, workspace_id=actor._workspace_id
         ).first()

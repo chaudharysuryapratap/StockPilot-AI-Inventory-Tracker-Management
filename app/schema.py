@@ -18,6 +18,7 @@ SPRINT_7_SCHEMA_VERSION = "20260808_single_workspace_hardening"
 SPRINT_8_SCHEMA_VERSION = "20260808_procurement_lots_intelligence"
 SPRINT_9_SCHEMA_VERSION = "20260809_saas_identity_workspaces"
 SPRINT_10_SCHEMA_VERSION = "20260810_single_business_warehouses_viewer"
+SPRINT_11_SCHEMA_VERSION = "20260815_public_signup_verification"
 SCHEMA_VERSIONS = (
     SPRINT_1_SCHEMA_VERSION,
     SPRINT_2_SCHEMA_VERSION,
@@ -29,6 +30,7 @@ SCHEMA_VERSIONS = (
     SPRINT_8_SCHEMA_VERSION,
     SPRINT_9_SCHEMA_VERSION,
     SPRINT_10_SCHEMA_VERSION,
+    SPRINT_11_SCHEMA_VERSION,
 )
 
 
@@ -955,6 +957,19 @@ def _upgrade_sprint10(connection) -> None:
         )
 
 
+def _upgrade_sprint11(connection) -> None:
+    """Trust password accounts that predate mandatory email verification."""
+
+    _add_column(connection, "users", "email_verified_at", "DATETIME NULL")
+    connection.execute(
+        sa.text(
+            "UPDATE users SET email_verified_at = CURRENT_TIMESTAMP "
+            "WHERE email_verified_at IS NULL "
+            "AND password_hash IS NOT NULL AND password_hash <> ''"
+        )
+    )
+
+
 def migrate_schema() -> MigrationResult:
     """Apply all pending StockPilot migrations to SQLite or RDS MySQL."""
     applied_versions: list[str] = []
@@ -1068,8 +1083,16 @@ def migrate_schema() -> MigrationResult:
             )
             applied_versions.append(SPRINT_10_SCHEMA_VERSION)
 
+        if SPRINT_11_SCHEMA_VERSION not in existing:
+            _upgrade_sprint11(connection)
+            connection.execute(
+                sa.text("INSERT INTO schema_migrations (version) VALUES (:version)"),
+                {"version": SPRINT_11_SCHEMA_VERSION},
+            )
+            applied_versions.append(SPRINT_11_SCHEMA_VERSION)
+
     return MigrationResult(
-        version=applied_versions[-1] if applied_versions else SPRINT_10_SCHEMA_VERSION,
+        version=applied_versions[-1] if applied_versions else SPRINT_11_SCHEMA_VERSION,
         applied=bool(applied_versions),
         applied_versions=tuple(applied_versions),
     )

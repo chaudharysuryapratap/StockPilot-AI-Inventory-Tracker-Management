@@ -18,7 +18,7 @@ class Config:
     """Runtime configuration loaded from environment variables."""
 
     APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
-    ASSET_VERSION = os.getenv("ASSET_VERSION", "20260810.4").strip() or "20260810.4"
+    ASSET_VERSION = os.getenv("ASSET_VERSION", "20260815.1").strip() or "20260815.1"
     AUTO_CREATE_SCHEMA = _as_bool(
         os.getenv("AUTO_CREATE_SCHEMA"), default=APP_ENV != "production"
     )
@@ -75,6 +75,12 @@ class Config:
     PREFERRED_URL_SCHEME = "https" if APP_ENV == "production" else "http"
     LOGIN_MAX_ATTEMPTS = max(1, int(os.getenv("LOGIN_MAX_ATTEMPTS", "5")))
     LOGIN_WINDOW_SECONDS = max(30, int(os.getenv("LOGIN_WINDOW_SECONDS", "300")))
+    SIGNUP_MAX_ATTEMPTS = max(1, int(os.getenv("SIGNUP_MAX_ATTEMPTS", "5")))
+    SIGNUP_WINDOW_SECONDS = max(60, int(os.getenv("SIGNUP_WINDOW_SECONDS", "3600")))
+    AUTH_LINK_MAX_ATTEMPTS = max(1, int(os.getenv("AUTH_LINK_MAX_ATTEMPTS", "3")))
+    AUTH_LINK_WINDOW_SECONDS = max(
+        60, int(os.getenv("AUTH_LINK_WINDOW_SECONDS", "900"))
+    )
 
     FORECAST_LOOKBACK_DAYS = int(os.getenv("FORECAST_LOOKBACK_DAYS", "28"))
     DEFAULT_SUPPLIER_LEAD_TIME_DAYS = int(
@@ -137,6 +143,10 @@ def validate_runtime_config(config: dict) -> None:
         config.get("AUTH_EMAIL_ENABLED") or config.get("SES_ENABLED")
     ):
         errors.append("email verification requires AUTH_EMAIL_ENABLED or SES_ENABLED")
+    if config.get("REQUIRE_EMAIL_VERIFICATION") and not str(
+        config.get("SES_FROM_EMAIL") or ""
+    ).strip():
+        errors.append("email verification requires SES_FROM_EMAIL")
     mfa_encryption_key = str(config.get("MFA_ENCRYPTION_KEY") or "").strip()
     if not mfa_encryption_key:
         errors.append("MFA_ENCRYPTION_KEY must be set separately from SECRET_KEY")

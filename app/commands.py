@@ -208,7 +208,8 @@ def create_admin(workspace_name: str, name: str, email: str, password: str) -> N
                 "email": email,
                 "password": password,
                 "password_confirm": password,
-            }
+            },
+            trusted_setup=True,
         )
     except (AuthenticationError, UserValidationError) as error:
         raise click.ClickException(str(error)) from error

@@ -27,6 +27,7 @@ from app.schema import (
     SPRINT_8_SCHEMA_VERSION,
     SPRINT_9_SCHEMA_VERSION,
     SPRINT_10_SCHEMA_VERSION,
+    SPRINT_11_SCHEMA_VERSION,
     current_schema_versions,
     migrate_schema,
 )
@@ -343,7 +344,7 @@ def test_sprint5_migrates_legacy_supplier_columns_without_losing_contact(tmp_pat
         }
         tables = set(inspect(db.engine).get_table_names())
 
-        assert result.version == SPRINT_10_SCHEMA_VERSION
+        assert result.version == SPRINT_11_SCHEMA_VERSION
         assert supplier.name == "Legacy Foods"
         assert supplier.contact_email == "legacy@example.com"
         assert supplier.contact_phone == "0123456789"

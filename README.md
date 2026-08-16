@@ -6,7 +6,10 @@
 
 A production-minded inventory operations platform for retailers and restaurants. StockPilot combines a live stock ledger, multi-warehouse workflows, purchasing, fulfilment, returns, demand forecasting, and owner-ready actions in one business-isolated application.
 
-**[Open the live app](https://stockpilotai.in)** · **[Health endpoint](https://stockpilotai.in/api/health)** · **[Run locally](#quick-start)** · **[Create an account](#create-your-first-account)**
+[![Open the live StockPilot website](https://img.shields.io/badge/Open_Live_Website-stockpilotai.in-146C64?style=for-the-badge&logo=googlechrome&logoColor=white)](https://stockpilotai.in/)
+[![Local setup](https://img.shields.io/badge/Local_Setup-Quick_Start-E8A33D?style=for-the-badge)](#quick-start)
+
+**[Create a live account](https://stockpilotai.in/)** · **[Existing-user sign in](https://stockpilotai.in/login?next=/)** · **[Screenshots](#screenshots)** · **[Features](#what-is-included)** · **[Local setup](#quick-start)**
 
 ![StockPilot inventory command centre with live warehouse totals](docs/screenshots/dashboard.png)
 
@@ -16,7 +19,16 @@ The forecasting engine calculates demand, lead-time coverage, projected stockout
 
 ## Live app
 
-The portfolio deployment runs at **[stockpilotai.in](https://stockpilotai.in)**. It is a private, invite-only environment: public `/signup` is disabled in production, so an existing Admin must create or invite live users. To explore onboarding without production access, run the app locally and use `/signup`.
+StockPilot is ready to try at **[stockpilotai.in](https://stockpilotai.in/)**. New visitors are taken to the guided account setup, while returning users can go directly to **[Sign in](https://stockpilotai.in/login?next=/)**.
+
+To start a new workspace:
+
+1. Open **[Create your StockPilot account](https://stockpilotai.in/)**.
+2. Add your business identity, primary warehouse, and first Administrator.
+3. Create a secure password and submit the setup form.
+4. Open the single-use verification link sent to your email, then sign in with your business username, email address, and password.
+
+Each new account creates an isolated business workspace. After verification, the Administrator can invite teammates and assign Admin, Manager, Picker, or Viewer access.
 
 The current live stack is Nginx and Gunicorn on EC2 with MariaDB, HTTPS, S3 backups, and deployment through GitHub Actions, AWS OIDC, and Systems Manager. The repository also includes the RDS MySQL reference architecture described below.
 
@@ -24,11 +36,12 @@ The current live stack is Nginx and Gunicorn on EC2 with MariaDB, HTTPS, S3 back
 
 <table>
   <tr>
+    <td width="50%"><img src="docs/screenshots/login.png" alt="StockPilot sign-in page with Create account option"><br><sub>Returning-user sign in with a visible Create account path.</sub></td>
     <td width="50%"><img src="docs/screenshots/account-setup.png" alt="StockPilot business and administrator account setup"><br><sub>Business, primary warehouse, and Admin onboarding.</sub></td>
-    <td width="50%"><img src="docs/screenshots/stock-catalogue.png" alt="StockPilot product catalogue with stock by warehouse"><br><sub>Searchable catalogue backed by the live stock ledger.</sub></td>
   </tr>
   <tr>
-    <td colspan="2"><img src="docs/screenshots/purchasing.png" alt="StockPilot purchasing and receiving workflow"><br><sub>Catalogue, purchase-order, and warehouse-receiving workflow.</sub></td>
+    <td width="50%"><img src="docs/screenshots/stock-catalogue.png" alt="StockPilot product catalogue with stock by warehouse"><br><sub>Searchable catalogue backed by the live stock ledger.</sub></td>
+    <td width="50%"><img src="docs/screenshots/purchasing.png" alt="StockPilot purchasing and receiving workflow"><br><sub>Catalogue, purchase-order, and warehouse-receiving workflow.</sub></td>
   </tr>
 </table>
 
@@ -344,6 +357,7 @@ Recorded revisions:
 - `20260808_procurement_lots_intelligence`
 - `20260809_saas_identity_workspaces`
 - `20260810_single_business_warehouses_viewer`
+- `20260815_public_signup_verification`
 
 Run `flask --app run schema-version` to inspect the applied revisions.
 
@@ -367,6 +381,10 @@ ALLOW_ACTOR_HEADER=false
 SESSION_COOKIE_SECURE=true
 REQUIRE_EMAIL_VERIFICATION=true
 AUTH_EMAIL_ENABLED=true
+SIGNUP_MAX_ATTEMPTS=5
+SIGNUP_WINDOW_SECONDS=3600
+AUTH_LINK_MAX_ATTEMPTS=3
+AUTH_LINK_WINDOW_SECONDS=900
 MFA_ENCRYPTION_KEY=replace-with-a-valid-fernet-key
 OIDC_ENABLED=true
 TRUST_PROXY_HEADERS=true
@@ -384,7 +402,7 @@ SES_FROM_EMAIL=verified-sender@yourdomain.com
 ALERT_RECIPIENTS=owner@yourdomain.com
 ```
 
-Set `STAFF_AUTH_ENABLED=true`, leave `STAFF_USERNAME` and `STAFF_PASSWORD` blank on a new installation, and keep secure cookies enabled behind HTTPS. For a private installation, set `ALLOW_WEB_SIGNUP=false` and create the first administrator with `flask --app run create-admin`. For SaaS onboarding, set `ALLOW_WEB_SIGNUP=true`, `REQUIRE_EMAIL_VERIFICATION=true`, and configure SES/auth email; unsafe combinations are rejected at startup. Generate a separate Fernet `MFA_ENCRYPTION_KEY`. OIDC client secrets are never stored in the database: workspace settings hold only an environment-variable name such as `OIDC_SECRET_FRESHMART`. Existing shared credentials migrate once into the durable Admin identity. Browser forms use session-backed CSRF tokens, passwords are Werkzeug hashes, auth links are hashed and single-use, and private APIs require a user session or internal machine token. Use Secrets Manager or Parameter Store for production values.
+Set `STAFF_AUTH_ENABLED=true`, leave `STAFF_USERNAME` and `STAFF_PASSWORD` blank on a new installation, and keep secure cookies enabled behind HTTPS. For a private installation, set `ALLOW_WEB_SIGNUP=false` and create the first administrator with `flask --app run create-admin`. For SaaS onboarding, set `ALLOW_WEB_SIGNUP=true`, `REQUIRE_EMAIL_VERIFICATION=true`, and configure SES/auth email; unsafe combinations are rejected at startup. The signup and auth-link limits cap account creation, verification resend, and password-reset requests from one network address. Generate a separate Fernet `MFA_ENCRYPTION_KEY`. OIDC client secrets are never stored in the database: workspace settings hold only an environment-variable name such as `OIDC_SECRET_FRESHMART`. Existing shared credentials migrate once into the durable Admin identity. Browser forms use session-backed CSRF tokens, passwords are Werkzeug hashes, auth links are hashed and single-use, and private APIs require a verified user session or internal machine token. Use Secrets Manager or Parameter Store for production values.
 
 ### 2. Create and secure EC2
 
