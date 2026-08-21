@@ -171,10 +171,26 @@ def test_public_signup_is_the_anonymous_home_after_initial_account_exists(
     assert login.status_code == 200
     assert b"Create account" in login.data
     assert b'href="/signup"' in login.data
+    assert b'id="sso-login-link" class="button secondary auth-sso"' in login.data
+    assert b"auth-sso disabled" not in login.data
+    assert b"Enter your business username before continuing with SSO." in login.data
+    assert b"auth.js?v=20260821.1" in login.data
 
     protected_page = saas_client.get("/warehouses")
     assert protected_page.status_code == 302
     assert protected_page.location == "/login?next=/warehouses"
+
+
+def test_public_shell_assets_are_available_before_authentication(saas_client):
+    favicon = saas_client.get("/favicon.ico")
+    worker = saas_client.get("/service-worker.js")
+
+    assert favicon.status_code == 200
+    assert favicon.mimetype == "image/svg+xml"
+    assert worker.status_code == 200
+    assert worker.headers["Service-Worker-Allowed"] == "/"
+    assert worker.headers["Cache-Control"] == "no-cache"
+    assert b'stockpilot-picker-v6' in worker.data
 
 
 def test_invite_only_mode_keeps_anonymous_home_and_login_signup_closed(
