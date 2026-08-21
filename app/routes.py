@@ -427,6 +427,8 @@ def require_staff_login():
         "web.mfa_challenge",
         "web.sso_login",
         "web.sso_callback",
+        "web.favicon",
+        "web.service_worker",
     }
     if request.endpoint in public_endpoints:
         return None
@@ -478,7 +480,7 @@ def inject_csrf_token():
         "role_labels": ROLE_LABELS,
         "report_currency": current_app.config["REPORT_CURRENCY"],
         "allow_signup": current_app.config.get("ALLOW_WEB_SIGNUP", False),
-        "asset_version": current_app.config.get("ASSET_VERSION", "20260815.1"),
+        "asset_version": current_app.config.get("ASSET_VERSION", "20260821.1"),
         "current_workspace": getattr(g, "active_workspace", None),
         "current_membership": getattr(g, "active_membership", None),
         "workspace_memberships": (
@@ -2571,6 +2573,13 @@ def workspace_username_availability():
     ).first() is None
     return jsonify(
         {"username": username, "valid": valid, "available": available}
+    )
+
+
+@web_bp.get("/favicon.ico")
+def favicon():
+    return send_from_directory(
+        current_app.static_folder, "stockpilot-icon.svg", mimetype="image/svg+xml"
     )
 
 

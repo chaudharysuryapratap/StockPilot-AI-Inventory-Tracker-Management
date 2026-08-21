@@ -73,26 +73,46 @@
   });
 
   const loginBusiness = document.getElementById("login-business-username");
+  const loginBusinessHelp = document.getElementById("login-business-username-help");
   const ssoLink = document.getElementById("sso-login-link");
+  const defaultSsoHelp = "Enter your business username before continuing with SSO.";
   function updateSsoLink() {
     if (!loginBusiness || !ssoLink) return;
     const value = username(loginBusiness.value);
     if (value.length >= 3) {
       ssoLink.href = `/auth/sso/${encodeURIComponent(value)}`;
-      ssoLink.classList.remove("disabled");
-      ssoLink.setAttribute("aria-disabled", "false");
     } else {
       ssoLink.href = "#";
-      ssoLink.classList.add("disabled");
-      ssoLink.setAttribute("aria-disabled", "true");
     }
   }
-  loginBusiness?.addEventListener("input", updateSsoLink);
-  ssoLink?.addEventListener("click", (event) => {
-    if (ssoLink.classList.contains("disabled")) {
-      event.preventDefault();
-      loginBusiness?.focus();
+  loginBusiness?.addEventListener("input", () => {
+    loginBusiness.setCustomValidity("");
+    if (loginBusinessHelp) {
+      loginBusinessHelp.textContent = defaultSsoHelp;
+      loginBusinessHelp.className = "";
     }
+    updateSsoLink();
+  });
+  loginBusiness?.addEventListener("change", updateSsoLink);
+  window.addEventListener("pageshow", updateSsoLink);
+  ssoLink?.addEventListener("click", (event) => {
+    event.preventDefault();
+    const value = username(loginBusiness?.value || "");
+    if (!loginBusiness || value.length < 3) {
+      if (loginBusiness) {
+        loginBusiness.setCustomValidity("Enter a business username with at least 3 characters to use SSO.");
+        loginBusiness.reportValidity();
+        loginBusiness.focus();
+      }
+      if (loginBusinessHelp) {
+        loginBusinessHelp.textContent = "Enter at least 3 letters, numbers, or hyphens to continue with SSO.";
+        loginBusinessHelp.className = "field-status error";
+      }
+      return;
+    }
+    loginBusiness.value = value;
+    loginBusiness.setCustomValidity("");
+    window.location.assign(`/auth/sso/${encodeURIComponent(value)}`);
   });
   updateSsoLink();
 })();

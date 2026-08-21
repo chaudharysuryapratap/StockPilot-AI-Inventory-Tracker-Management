@@ -5,6 +5,9 @@
 # Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.pytest-cache/
+.pytest-tmp/
 .venv/
 venv/
 env/
@@ -40,5 +43,7 @@ outputs/
 # Temporary files
 tmp/
 temp/
+.codex-test-run-*/
+.tmp-po-*/
 /live-preview.db
 /visual-qa.db
