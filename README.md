@@ -1,6 +1,6 @@
 # StockPilot AI — Inventory Tracker & Management
 
-[![CI](https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management/actions/workflows/ci.yml/badge.svg)](https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management/actions/workflows/ci.yml)
+[![CI](https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Management-Application/actions/workflows/ci.yml/badge.svg)](https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Management-Application/actions/workflows/ci.yml)
 ![Python 3.12 and 3.13](https://img.shields.io/badge/Python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)
 ![Flask 3.1](https://img.shields.io/badge/Flask-3.1-000000?logo=flask&logoColor=white)
 
@@ -105,8 +105,8 @@ EventBridge Scheduler runs the daily analysis with timezone and retry controls. 
 You need Git and Python 3.12 or 3.13. Node, MySQL, and an AWS account are not required for local use.
 
 ```bash
-git clone https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management.git
-cd StockPilot-AI-Inventory-Tracker-Management
+git clone https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Management-Application.git
+cd StockPilot-AI-Inventory-Management-Application
 ```
 
 <details open>

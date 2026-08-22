@@ -16,7 +16,7 @@ Parameters:
       - t3.micro
   RepositoryUrl:
     Type: String
-    Default: https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Tracker-Management.git
+    Default: https://github.com/chaudharysuryapratap/StockPilot-AI-Inventory-Management-Application.git
   RepositoryBranch:
     Type: String
     Default: main
@@ -27,7 +27,7 @@ Parameters:
     Type: String
   GitHubOidcSubject:
     Type: String
-    Default: repo:chaudharysuryapratap@153225551/StockPilot-AI-Inventory-Tracker-Management@1319514090:ref:refs/heads/main
+    Default: repo:chaudharysuryapratap@153225551/StockPilot-AI-Inventory-Management-Application@1319514090:ref:refs/heads/main
     Description: Immutable GitHub Actions OIDC subject for this repository's main branch.
 
 Resources:
