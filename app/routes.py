@@ -144,6 +144,7 @@ from app.services.procurement import (
     serialize_receipt,
 )
 from app.services.intelligence import (
+    AssistantRateLimitError,
     DashboardChatService,
     ForecastAccuracyService,
     dashboard_context,
@@ -480,7 +481,7 @@ def inject_csrf_token():
         "role_labels": ROLE_LABELS,
         "report_currency": current_app.config["REPORT_CURRENCY"],
         "allow_signup": current_app.config.get("ALLOW_WEB_SIGNUP", False),
-        "asset_version": current_app.config.get("ASSET_VERSION", "20260821.1"),
+        "asset_version": current_app.config.get("ASSET_VERSION", "20260822.1"),
         "current_workspace": getattr(g, "active_workspace", None),
         "current_membership": getattr(g, "active_membership", None),
         "workspace_memberships": (
@@ -3428,6 +3429,8 @@ def dashboard_chat_api():
             conversation_id=payload.get("conversation_id"),
             location_id=payload.get("warehouse_id"),
         )
+    except AssistantRateLimitError as error:
+        return jsonify({"error": str(error)}), 429
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     return jsonify(

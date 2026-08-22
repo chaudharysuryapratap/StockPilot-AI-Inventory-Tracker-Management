@@ -95,7 +95,7 @@ EventBridge Scheduler runs the daily analysis with timezone and retry controls. 
 | Forecast accuracy | Seven-day predicted-versus-actual outcomes with MAE, MAPE, and prediction-bias summaries |
 | Forecast explainability | Dashboard panels and API JSON expose the exact sales window, averages, weights, weekday multiplier, lead time, available stock, and target stock used by each run |
 | GenAI explanation | Optional Bedrock `Converse` call using an EC2 IAM role |
-| Dashboard assistant | Workspace-grounded questions about demand changes, stock risks, expiry, dead stock, and forecast accuracy, with deterministic fallback answers |
+| StockPilot Assistant | Role-aware, conversational help across StockPilot workflows plus tenant-scoped products, stock, warehouses, suppliers, purchasing, orders, transfers, returns, expiry, demand, and forecast accuracy; bounded deterministic answers remain available when Bedrock is disabled |
 | Exportable reporting | Workspace-scoped inventory risk and current-unit-cost valuation reports in JSON, Excel, and PDF |
 | Automated owner alerts | Optional SES v2 text + HTML delivery for daily actions or critical-only risks, with a durable delivery audit |
 | Scheduled analysis | CloudFormation template: EventBridge Scheduler → Lambda → SSM → EC2 command |

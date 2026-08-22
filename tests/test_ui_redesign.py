@@ -23,6 +23,11 @@ def test_admin_dashboard_exposes_new_decision_ui(client, app, seeded_catalog):
     assert b"Manage team access" in page.data
     assert b"Purchasing & receiving" in page.data
     assert b"Add inventory" in page.data
+    assert b"Ask anything about StockPilot" in page.data
+    assert b'id="assistant-reset"' in page.data
+    assert b'<textarea id="assistant-question"' in page.data
+    assert b"Workspace-grounded" in page.data
+    assert b"How do I receive part of a purchase order?" in page.data
 
 
 def test_manager_and_picker_receive_distinct_navigation(client, app, seeded_catalog):

@@ -18,7 +18,7 @@ class Config:
     """Runtime configuration loaded from environment variables."""
 
     APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
-    ASSET_VERSION = os.getenv("ASSET_VERSION", "20260821.1").strip() or "20260821.1"
+    ASSET_VERSION = os.getenv("ASSET_VERSION", "20260822.1").strip() or "20260822.1"
     AUTO_CREATE_SCHEMA = _as_bool(
         os.getenv("AUTO_CREATE_SCHEMA"), default=APP_ENV != "production"
     )
@@ -99,6 +99,9 @@ class Config:
     AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
     BEDROCK_ENABLED = _as_bool(os.getenv("BEDROCK_ENABLED"))
     BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-micro-v1:0")
+    ASSISTANT_MAX_REQUESTS_PER_MINUTE = max(
+        1, int(os.getenv("ASSISTANT_MAX_REQUESTS_PER_MINUTE", "15"))
+    )
 
     SES_ENABLED = _as_bool(os.getenv("SES_ENABLED"))
     SES_FROM_EMAIL = os.getenv("SES_FROM_EMAIL", "")
