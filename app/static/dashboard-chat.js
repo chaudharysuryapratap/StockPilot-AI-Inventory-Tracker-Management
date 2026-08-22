@@ -4,8 +4,11 @@
   const form = document.getElementById("assistant-form");
   const input = document.getElementById("assistant-question");
   const messages = document.getElementById("assistant-messages");
+  const reset = document.getElementById("assistant-reset");
   if (!panel || !form || !input || !messages) return;
   let conversationId = null;
+  const welcomeMessage =
+    "I can explain StockPilot and analyze this workspace. Ask a workflow question, use a SKU or order reference, or choose a suggestion above.";
 
   function append(className, text) {
     const paragraph = document.createElement("p");
@@ -21,6 +24,21 @@
       input.value = button.dataset.assistantPrompt;
       input.focus();
     });
+  });
+
+  reset?.addEventListener("click", () => {
+    conversationId = null;
+    messages.replaceChildren();
+    append("assistant-answer", welcomeMessage);
+    input.value = "";
+    input.focus();
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
   });
 
   form.addEventListener("submit", async (event) => {
@@ -53,7 +71,10 @@
         }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Assistant unavailable");
+      if (!response.ok) {
+        if (response.status === 400 && conversationId) conversationId = null;
+        throw new Error(payload.error || "Assistant unavailable");
+      }
       conversationId = payload.conversation_id;
       loading.remove();
       append("assistant-answer", payload.answer);

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
+import json
 
 from app import db
 from app.models import (
@@ -15,9 +16,12 @@ from app.models import (
     Sale,
     SaleItem,
     StockLevel,
+    User,
     Workspace,
+    WorkspaceMembership,
     utcnow,
 )
+from app.services.bedrock import BedrockNarrator
 
 
 INTERNAL_HEADERS = {"X-Internal-Token": "test-internal-token"}
@@ -296,6 +300,193 @@ def test_ai_draft_approval_forecast_accuracy_and_grounded_chat(
     assert chat.status_code == 200
     assert chat.json["conversation_id"]
     assert "replenishment" in chat.json["answer"].lower()
+
+
+def test_assistant_answers_catalogue_workflow_and_role_questions(
+    client, seeded_catalog
+):
+    product_answer = client.post(
+        "/api/assistant/chat",
+        json={"question": "Where is TEST-001 and how much is available?"},
+    )
+    assert product_answer.status_code == 200
+    assert "TEST-001" in product_answer.json["answer"]
+    assert "10" in product_answer.json["answer"]
+    context = product_answer.json["context"]
+    assert context["context_version"] == 2
+    assert context["scope"]["description"] == "All warehouses in the signed-in business"
+    assert context["inventory"]["matched_products"][0]["sku"] == "TEST-001"
+    assert context["inventory"]["matched_products"][0]["stock"]["available"] == 10
+    assert context["warehouses"][0]["code"] == "TEST"
+    assert context["suppliers"]["active"] == 1
+    assert context["requesting_user"]["role"] == "admin"
+
+    csv_answer = client.post(
+        "/api/assistant/chat", json={"question": "How do I import products from CSV?"}
+    )
+    assert csv_answer.status_code == 200
+    assert "template" in csv_answer.json["answer"].lower()
+    assert "atomic" in csv_answer.json["answer"].lower()
+
+    role_answer = client.post(
+        "/api/assistant/chat", json={"question": "What can my role do?"}
+    )
+    assert role_answer.status_code == 200
+    assert "admin" in role_answer.json["answer"].lower()
+    assert "warehouses" in role_answer.json["answer"].lower()
+
+    action_answer = client.post(
+        "/api/assistant/chat", json={"question": "What needs my attention today?"}
+    )
+    assert action_answer.status_code == 200
+    assert "current action summary" in action_answer.json["answer"].lower()
+    assert "replenishment risk" in action_answer.json["answer"].lower()
+
+
+def test_assistant_passes_recent_history_and_keeps_other_workspaces_out(
+    client, app, seeded_catalog, monkeypatch
+):
+    captured: list[dict] = []
+
+    def fake_answer(question, context, *, history=None):
+        captured.append(
+            {"question": question, "history": list(history or []), "context": context}
+        )
+        return f"Grounded answer {len(captured)}"
+
+    monkeypatch.setattr(BedrockNarrator, "answer", staticmethod(fake_answer))
+    first = client.post(
+        "/api/assistant/chat", json={"question": "Tell me about TEST-001"}
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/api/assistant/chat",
+        json={
+            "question": "What about its warehouse position?",
+            "conversation_id": first.json["conversation_id"],
+        },
+    )
+    assert second.status_code == 200
+    assert captured[1]["history"] == [
+        {"role": "user", "content": "Tell me about TEST-001"},
+        {"role": "assistant", "content": "Grounded answer 1"},
+    ]
+
+    with app.app_context():
+        isolated_workspace = Workspace(name="Assistant isolation test")
+        db.session.add(isolated_workspace)
+        db.session.flush()
+        isolated_location = InventoryLocation(
+            workspace=isolated_workspace, name="Secret warehouse", code="SECRET"
+        )
+        isolated_product = Product(
+            workspace=isolated_workspace,
+            sku="SECRET-999",
+            name="Other tenant secret product",
+        )
+        db.session.add_all([isolated_location, isolated_product])
+        db.session.flush()
+        db.session.add(
+            StockLevel(
+                product=isolated_product,
+                location=isolated_location,
+                quantity_on_hand=Decimal("999.00"),
+            )
+        )
+        db.session.commit()
+
+    isolated_question = client.post(
+        "/api/assistant/chat", json={"question": "Tell me about SECRET-999"}
+    )
+    assert isolated_question.status_code == 200
+    isolated_context = captured[-1]["context"]
+    assert isolated_context["inventory"]["matched_products"] == []
+    assert "SECRET-999" not in str(isolated_context)
+
+
+def test_bedrock_assistant_receives_history_and_workspace_context(app, monkeypatch):
+    calls: list[dict] = []
+
+    class FakeBedrockClient:
+        def converse(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "output": {
+                    "message": {
+                        "content": [{"text": "Use Purchasing & receiving to review the order."}]
+                    }
+                }
+            }
+
+    monkeypatch.setattr(
+        "app.services.bedrock.boto3.client", lambda *args, **kwargs: FakeBedrockClient()
+    )
+    with app.app_context():
+        app.config["BEDROCK_ENABLED"] = True
+        answer = BedrockNarrator.answer(
+            "What about that order?",
+            {"context_version": 2, "purchase_orders": {"matched_or_recent": []}},
+            history=[
+                {"role": "user", "content": "Show open purchase orders"},
+                {"role": "assistant", "content": "There is one open order."},
+            ],
+        )
+
+    assert answer == "Use Purchasing & receiving to review the order."
+    assert calls[0]["inferenceConfig"] == {"maxTokens": 700, "temperature": 0.15}
+    assert "read-only copilot" in calls[0]["system"][0]["text"]
+    payload = json.loads(calls[0]["messages"][0]["content"][0]["text"])
+    assert payload["question"] == "What about that order?"
+    assert payload["recent_conversation"][0]["content"] == "Show open purchase orders"
+    assert payload["stockpilot_context"]["context_version"] == 2
+
+
+def test_assistant_context_respects_picker_permissions(client, app, seeded_catalog):
+    with app.app_context():
+        actor = User.query.order_by(User.id).first()
+        actor.role = "picker"
+        membership = WorkspaceMembership.query.filter_by(
+            workspace_id=actor._workspace_id, user_id=actor.id
+        ).one()
+        membership.role = "picker"
+        db.session.commit()
+
+    response = client.post(
+        "/api/assistant/chat", json={"question": "Show supplier and purchase order details"}
+    )
+    assert response.status_code == 200
+    assert "not available to the Picker role" in response.json["answer"]
+    assert response.json["context"]["suppliers"] == {
+        "available_to_role": False,
+        "active": None,
+        "matched_or_recent": [],
+    }
+    assert response.json["context"]["purchase_orders"] == {
+        "available_to_role": False,
+        "status_counts": {},
+        "matched_or_recent": [],
+    }
+    assert response.json["context"]["team"] == {
+        "available_to_role": False,
+        "active_memberships_by_role": {},
+    }
+
+
+def test_assistant_rate_limit_returns_retryable_response(client, app, seeded_catalog):
+    app.config["ASSISTANT_MAX_REQUESTS_PER_MINUTE"] = 2
+
+    first = client.post("/api/assistant/chat", json={"question": "What is low stock?"})
+    second = client.post(
+        "/api/assistant/chat", json={"question": "What can I reorder?"}
+    )
+    limited = client.post(
+        "/api/assistant/chat", json={"question": "Show purchase orders"}
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert limited.status_code == 429
+    assert "Wait a minute" in limited.json["error"]
 
 
 def test_catalogue_identifiers_are_workspace_scoped(app, seeded_catalog):

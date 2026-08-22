@@ -176,13 +176,15 @@
 <section class="panel assistant-panel ai-surface" id="inventory-assistant" data-chat-url="{{ url_for('api.dashboard_chat_api') }}" data-csrf-token="{{ csrf_token() }}" data-warehouse-id="{{ selected_warehouse.id if dashboard_scope == 'warehouse' and selected_warehouse else '' }}">
   <div class="assistant-intro">
     <span class="assistant-mark">✦</span>
-    <div><p class="eyebrow ai-eyebrow">STOCKPILOT ASSISTANT</p><h2>Ask your live inventory</h2><p class="panel-note">Answers use {{ selected_warehouse.name if dashboard_scope == 'warehouse' and selected_warehouse else 'all warehouses' }} for demand, forecast accuracy, expiry, and stock risk.</p></div>
+    <div><p class="eyebrow ai-eyebrow">STOCKPILOT ASSISTANT</p><h2>Ask anything about StockPilot</h2><p class="panel-note">Explains workflows and answers from {{ selected_warehouse.name if dashboard_scope == 'warehouse' and selected_warehouse else 'the entire business' }} across products, stock, purchasing, orders, returns, warehouses, forecasts, and risks.</p></div>
+    <button class="button secondary compact assistant-reset" id="assistant-reset" type="button">New chat</button>
   </div>
+  <div class="assistant-scope"><span>● Workspace-grounded</span><span>Read-only</span><span>Role-aware</span></div>
   <div class="assistant-prompts" aria-label="Suggested questions">
-    <button type="button" data-assistant-prompt="What demand changed?">Demand changes</button><button type="button" data-assistant-prompt="What stock is most at risk?">Stock risks</button><button type="button" data-assistant-prompt="What is near expiry?">Near expiry</button><button type="button" data-assistant-prompt="How accurate are our forecasts?">Forecast accuracy</button>
+    <button type="button" data-assistant-prompt="What needs my attention today?">Action summary</button><button type="button" data-assistant-prompt="Which products should I reorder and why?">Reorder advice</button><button type="button" data-assistant-prompt="Show open purchase orders and remaining quantities.">Open purchasing</button><button type="button" data-assistant-prompt="How do I receive part of a purchase order?">How-to help</button><button type="button" data-assistant-prompt="What is near expiry?">Near expiry</button><button type="button" data-assistant-prompt="What can my role do?">My permissions</button>
   </div>
-  <div id="assistant-messages" class="assistant-messages" aria-live="polite"><p class="assistant-answer">I’m grounded in the latest snapshot. Choose a question above or ask your own.</p></div>
-  <form id="assistant-form" class="assistant-form"><label class="sr-only" for="assistant-question">Inventory question</label><input id="assistant-question" maxlength="1000" placeholder="Ask about demand, risk, expiry, or accuracy…" required><button class="button ai-button" type="submit">Ask StockPilot</button></form>
+  <div id="assistant-messages" class="assistant-messages" aria-live="polite"><p class="assistant-answer">I can explain StockPilot and analyze this workspace. Ask a workflow question, use a SKU or order reference, or choose a suggestion above.</p></div>
+  <form id="assistant-form" class="assistant-form"><label class="sr-only" for="assistant-question">Question for StockPilot Assistant</label><textarea id="assistant-question" maxlength="1000" rows="2" placeholder="Ask about any StockPilot workflow or live workspace data…" required></textarea><button class="button ai-button" type="submit">Ask StockPilot</button></form>
 </section>
 {% endblock %}
 
